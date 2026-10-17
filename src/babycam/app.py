@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
+from ctypes import CDLL
 from pathlib import Path
 
 import ezdxf
@@ -500,6 +502,18 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    if (sys.platform.startswith("linux")
+            and (os.environ.get("QT_QPA_PLATFORM") == "xcb"
+                 or (not os.environ.get("QT_QPA_PLATFORM")
+                     and os.environ.get("XDG_SESSION_TYPE") != "wayland"))
+            and os.environ.get("DISPLAY")):
+        try:
+            CDLL("libxcb-cursor.so.0")
+        except OSError:
+            print("BabyCAM needs libxcb-cursor.so.0 to use Qt's X11 backend. "
+                  "On Ubuntu, install it with: sudo apt install libxcb-cursor0",
+                  file=sys.stderr)
+            return 1
     application = QApplication(sys.argv)
     window = MainWindow()
     window.show()

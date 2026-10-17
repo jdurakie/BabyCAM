@@ -13,6 +13,11 @@ uv sync
 uv run babycam
 ```
 
+On Ubuntu with an X11 desktop, Qt also needs the system package
+`libxcb-cursor0`. If the app reports that `libxcb-cursor.so.0` is missing,
+install it with `sudo apt install libxcb-cursor0`, then run `uv run babycam`
+again.
+
 Or install the project into a Python 3.11+ virtual environment and run
 `python -m babycam`.
 
