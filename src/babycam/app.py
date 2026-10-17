@@ -6,6 +6,7 @@ import math
 import os
 import sys
 from ctypes import CDLL
+from dataclasses import replace
 from pathlib import Path
 
 import ezdxf
@@ -16,12 +17,15 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGraphicsItem,
     QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget, QInputDialog,
+    QPushButton, QSplitter, QSpinBox, QTabWidget, QVBoxLayout, QWidget, QInputDialog,
 )
 
-from .cam import CAMError, grbl_gcode, number, plan_program, preview_paths, profile_path
+from .cam import (CAMError, dogbone_centers, grbl_gcode, number, plan_program, planned_path,
+                  preview_paths)
 from .dxf_import import UnitSelectionRequired, load_dxf
-from .model import Job, Operation, Point
+from .model import Job, Operation, Point, Tool
+from .path_edits import split_for_tabs
+from .tool_library import copy_tool, load_tools, save_tools
 
 
 def _path(points: tuple[Point, ...] | list[Point]) -> QPainterPath:
@@ -66,6 +70,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.job = Job()
+        try:
+            self.tool_presets = load_tools()
+            self.library_error = None
+        except (OSError, ValueError, TypeError) as exc:
+            self.tool_presets = []
+            self.library_error = f"Could not read tool library: {exc}"
         self._input_error: str | None = None
         self._refreshing = False
         self.setWindowTitle("BabyCAM")
@@ -123,6 +133,8 @@ class MainWindow(QMainWindow):
         toolbar.addAction(open_action)
         toolbar.addAction(export_action)
         self._refresh()
+        if self.library_error:
+            self.message.setText(self.library_error)
 
     def _field(self, form: QFormLayout, label: str, initial: str = "", hint: str = "") -> QLineEdit:
         field = QLineEdit(initial)
@@ -143,15 +155,46 @@ class MainWindow(QMainWindow):
         self.allowance = self._field(form, "Through allowance (mm)", "0.1")
         self.delay = self._field(form, "Spindle delay (s)", "2")
         self.auto_spindle = QCheckBox("Control spindle with M3/M5")
-        self.auto_spindle.setChecked(True)
         self.auto_spindle.toggled.connect(self._read_fields)
         form.addRow(self.auto_spindle)
+        edits = QGroupBox("Defaults for newly assigned cuts")
+        edit_form = QFormLayout(edits)
+        self.default_tabs = QCheckBox("Always create tabs")
+        self.default_dogbones = QCheckBox("Always create dogbones")
+        for box in (self.default_tabs, self.default_dogbones):
+            box.toggled.connect(self._read_fields)
+            edit_form.addRow(box)
+        self.tab_min = QSpinBox()
+        self.tab_min.setRange(1, 99)
+        self.tab_min.setValue(2)
+        self.tab_max = QSpinBox()
+        self.tab_max.setRange(1, 99)
+        self.tab_max.setValue(4)
+        for label, spin in (("Minimum tabs", self.tab_min), ("Maximum tabs", self.tab_max)):
+            spin.valueChanged.connect(self._read_fields)
+            edit_form.addRow(label, spin)
+        self.tab_width = self._field(edit_form, "Tab width (mm)", hint="stock thickness")
+        self.tab_rise = self._field(edit_form, "Tab rise (%)", "75")
+        self.dogbone_clearance = self._field(edit_form, "Dogbone extra clearance (mm)", "0.25")
+        form.addRow(edits)
         form.addRow(QLabel("XY zero: DXF bounds lower left by default.\nZ zero: stock top."))
         self.tabs.addTab(page, "Setup")
 
     def _tool_tab(self) -> None:
         page = QWidget()
         form = QFormLayout(page)
+        self.preset_picker = QComboBox()
+        self._refresh_preset_picker()
+        form.addRow("Global tool library", self.preset_picker)
+        preset_row = QHBoxLayout()
+        for label, callback in (("Use preset", self._use_preset),
+                                ("Save/update preset", self._save_preset),
+                                ("Delete preset", self._delete_preset)):
+            button = QPushButton(label)
+            button.clicked.connect(callback)
+            preset_row.addWidget(button)
+        form.addRow(preset_row)
+        form.addRow(QLabel("The job uses a copy. Editing it does not change the preset."))
         self.tool_name = self._field(form, "Endmill name", hint="required")
         self.tool_number = self._field(form, "Tool number", "1")
         self.diameter = self._field(form, "Diameter (mm)", hint="required")
@@ -163,6 +206,9 @@ class MainWindow(QMainWindow):
         self.can_plunge = QCheckBox("Can plunge into material")
         self.can_plunge.toggled.connect(self._read_fields)
         form.addRow(self.can_plunge)
+        blank = QPushButton("New blank job endmill")
+        blank.clicked.connect(self._blank_tool)
+        form.addRow(blank)
         self.tabs.addTab(page, "Endmill")
 
     def _cut_tab(self) -> None:
@@ -193,6 +239,29 @@ class MainWindow(QMainWindow):
         self.direction.addItems(["Climb", "Conventional"])
         self.direction.currentIndexChanged.connect(self._edit_operation)
         form.addRow("Cut direction", self.direction)
+        self.cut_tabs = QCheckBox("Holding tabs on this cut")
+        self.cut_dogbones = QCheckBox("Dogbones on this cut")
+        for checkbox in (self.cut_tabs, self.cut_dogbones):
+            checkbox.toggled.connect(self._edit_operation)
+            form.addRow(checkbox)
+        self.cut_tab_min = QSpinBox()
+        self.cut_tab_min.setRange(1, 99)
+        self.cut_tab_max = QSpinBox()
+        self.cut_tab_max.setRange(1, 99)
+        for label, spin in (("Minimum tabs", self.cut_tab_min), ("Maximum tabs", self.cut_tab_max)):
+            spin.valueChanged.connect(self._edit_operation)
+            form.addRow(label, spin)
+        self.cut_tab_width = QLineEdit()
+        self.cut_tab_width.setPlaceholderText("mm")
+        self.cut_tab_width.editingFinished.connect(self._edit_operation)
+        form.addRow("Tab width (mm)", self.cut_tab_width)
+        self.cut_tab_rise = QLineEdit()
+        self.cut_tab_rise.editingFinished.connect(self._edit_operation)
+        form.addRow("Tab rise (%)", self.cut_tab_rise)
+        self.dogbone_list = QListWidget()
+        self.dogbone_list.setMaximumHeight(100)
+        self.dogbone_list.itemChanged.connect(self._toggle_dogbone_candidate)
+        form.addRow("Relief corners", self.dogbone_list)
         remove = QPushButton("Remove selected cut")
         remove.clicked.connect(self._remove_operation)
         form.addRow(remove)
@@ -213,6 +282,13 @@ class MainWindow(QMainWindow):
         setup.through_allowance = _float(self.allowance.text()) or 0.0
         setup.spindle_delay = _float(self.delay.text()) or 0.0
         setup.automatic_spindle = self.auto_spindle.isChecked()
+        setup.default_tabs = self.default_tabs.isChecked()
+        setup.default_dogbones = self.default_dogbones.isChecked()
+        setup.tab_min = self.tab_min.value()
+        setup.tab_max = self.tab_max.value()
+        setup.tab_width = _float(self.tab_width.text())
+        setup.tab_rise = _float(self.tab_rise.text()) or 0
+        setup.dogbone_clearance = _float(self.dogbone_clearance.text()) or 0
         tool.name = self.tool_name.text().strip()
         try:
             tool.number = int(self.tool_number.text())
@@ -233,11 +309,95 @@ class MainWindow(QMainWindow):
                 self._input_error = f"Enter a valid {label}."
                 break
         for label, field in (("Stock width", self.stock_width), ("Stock height", self.stock_height),
-                             ("Usable cutting length", self.cutting_length)):
+                             ("Usable cutting length", self.cutting_length), ("Tab width", self.tab_width)):
             if field.text().strip() and _float(field.text()) is None:
                 self._input_error = f"Enter a valid {label}."
                 break
+        if (setup.tab_max < setup.tab_min or not 0 < setup.tab_rise <= 100
+                or setup.dogbone_clearance < 0 or
+                (setup.tab_width is not None and setup.tab_width <= 0)):
+            self._input_error = "Check tab count, width, rise (0–100%), and dogbone clearance."
         self._refresh()
+
+    def _refresh_preset_picker(self) -> None:
+        current = self.preset_picker.currentText() if hasattr(self, "preset_picker") else ""
+        if not hasattr(self, "preset_picker"):
+            return
+        self.preset_picker.clear()
+        for tool in self.tool_presets:
+            self.preset_picker.addItem(f"T{tool.number} · {tool.name}")
+        index = self.preset_picker.findText(current)
+        if index >= 0:
+            self.preset_picker.setCurrentIndex(index)
+
+    def _show_tool(self, tool: Tool) -> None:
+        self._refreshing = True
+        for field, value in ((self.tool_name, tool.name), (self.tool_number, str(tool.number)),
+                             (self.diameter, number(tool.diameter) if tool.diameter is not None else ""),
+                             (self.feed, number(tool.feed) if tool.feed is not None else ""),
+                             (self.plunge, number(tool.plunge) if tool.plunge is not None else ""),
+                             (self.rpm, str(tool.rpm) if tool.rpm is not None else ""),
+                             (self.stepdown, number(tool.stepdown) if tool.stepdown is not None else ""),
+                             (self.cutting_length, number(tool.cutting_length) if tool.cutting_length is not None else "")):
+            field.setText(value)
+        self.can_plunge.setChecked(tool.can_plunge)
+        self._refreshing = False
+        self._read_fields()
+
+    def _use_preset(self) -> None:
+        index = self.preset_picker.currentIndex()
+        if index < 0:
+            self.message.setText("The tool library is empty. Enter an endmill and save it as a preset.")
+            return
+        self.job.tool = copy_tool(self.tool_presets[index])
+        self._show_tool(self.job.tool)
+
+    def _save_preset(self) -> None:
+        if self.library_error:
+            self.message.setText(self.library_error + " Repair the library file before saving presets.")
+            return
+        tool = self.job.tool
+        if (not tool.name or tool.number < 1 or
+                any(value is None or value <= 0 for value in
+                    (tool.diameter, tool.feed, tool.plunge, tool.rpm, tool.stepdown))):
+            self.message.setText("Complete the endmill name, number, diameter, feeds, RPM, and stepdown before saving a preset.")
+            return
+        previous = next((i for i, preset in enumerate(self.tool_presets)
+                         if preset.name == tool.name), None)
+        updated = [copy_tool(preset) for preset in self.tool_presets]
+        if previous is None:
+            updated.append(copy_tool(tool))
+            selected = len(updated) - 1
+        else:
+            updated[previous] = copy_tool(tool)
+            selected = previous
+        try:
+            save_tools(updated)
+        except OSError as exc:
+            self.message.setText(f"Could not save tool library: {exc}")
+            return
+        self.tool_presets = updated
+        self._refresh_preset_picker()
+        self.preset_picker.setCurrentIndex(selected)
+        self.message.setText(f"Saved global endmill preset: {tool.name}.")
+
+    def _delete_preset(self) -> None:
+        index = self.preset_picker.currentIndex()
+        if index < 0:
+            return
+        remaining = self.tool_presets[:index] + self.tool_presets[index + 1:]
+        try:
+            save_tools(remaining)
+        except OSError as exc:
+            self.message.setText(f"Could not update tool library: {exc}")
+            return
+        self.tool_presets = remaining
+        self._refresh_preset_picker()
+        self.message.setText("Deleted preset. The current job endmill is unchanged.")
+
+    def _blank_tool(self) -> None:
+        self.job.tool = Tool()
+        self._show_tool(self.job.tool)
 
     def _open_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open DXF", "", "DXF drawings (*.dxf)")
@@ -292,9 +452,14 @@ class MainWindow(QMainWindow):
                 continue
             if any(op.contour_id == identifier for op in self.job.operations):
                 continue
-            candidate = Operation(identifier, side)
+            setup = self.job.setup
+            candidate = Operation(
+                identifier, side, tabs=setup.default_tabs, dogbones=setup.default_dogbones,
+                tab_min=setup.tab_min, tab_max=setup.tab_max,
+                tab_width=setup.tab_width if setup.tab_width is not None else setup.thickness,
+                tab_rise=setup.tab_rise)
             try:
-                profile_path(self.job, candidate)
+                planned_path(self.job, candidate, None)
             except CAMError as exc:
                 creation_error = str(exc)
                 continue
@@ -323,6 +488,10 @@ class MainWindow(QMainWindow):
                          f"{number(operation.depth)} mm" if operation.depth_mode == "depth" and operation.depth
                          else "Depth not selected")
                 item = QListWidgetItem(f"{operation.side.title()} · {labels.get(operation.contour_id, '?')} · {depth}")
+                if operation.tabs:
+                    item.setText(item.text() + " · Tabs")
+                if operation.dogbones:
+                    item.setText(item.text() + " · Dogbones")
                 item.setData(Qt.ItemDataRole.UserRole, operation.contour_id)
                 self.operations.addItem(item)
                 if operation.contour_id == old_id:
@@ -345,7 +514,36 @@ class MainWindow(QMainWindow):
             2 if operation and operation.depth_mode == "depth" else 0)
         self.cut_depth.setText(number(operation.depth) if operation and operation.depth else "")
         self.direction.setCurrentIndex(1 if operation and operation.direction == "conventional" else 0)
+        self.cut_tabs.setChecked(bool(operation and operation.tabs))
+        self.cut_dogbones.setChecked(bool(operation and operation.dogbones))
+        self.cut_tab_min.setValue((operation.tab_min if operation and operation.tab_min is not None
+                                   else self.job.setup.tab_min))
+        self.cut_tab_max.setValue((operation.tab_max if operation and operation.tab_max is not None
+                                   else self.job.setup.tab_max))
+        width = operation.tab_width if operation and operation.tab_width is not None else (
+            self.job.setup.tab_width or self.job.setup.thickness)
+        self.cut_tab_width.setText(number(width) if width is not None else "")
+        rise = operation.tab_rise if operation and operation.tab_rise is not None else self.job.setup.tab_rise
+        self.cut_tab_rise.setText(number(rise))
+        self.dogbone_list.blockSignals(True)
+        self.dogbone_list.clear()
+        if operation and operation.dogbones:
+            try:
+                for index, (x, y) in enumerate(dogbone_centers(
+                        self.job, operation, include_suppressed=True)):
+                    item = QListWidgetItem(f"Corner {index + 1}: X {number(x)}, Y {number(y)}")
+                    item.setData(Qt.ItemDataRole.UserRole, index)
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    item.setCheckState(Qt.CheckState.Unchecked if index in operation.suppressed_dogbones
+                                       else Qt.CheckState.Checked)
+                    self.dogbone_list.addItem(item)
+            except CAMError:
+                pass
+        self.dogbone_list.blockSignals(False)
         self.cut_depth.setEnabled(bool(operation and operation.depth_mode == "depth"))
+        for widget in (self.cut_tabs, self.cut_dogbones, self.cut_tab_min, self.cut_tab_max,
+                       self.cut_tab_width, self.cut_tab_rise):
+            widget.setEnabled(operation is not None)
         self._refreshing = False
         self._refresh()
 
@@ -355,11 +553,55 @@ class MainWindow(QMainWindow):
         operation = self._current_operation()
         if operation is None:
             return
+        if (self.cut_tabs.isChecked() and
+                ((self.cut_tab_width.text().strip() and _float(self.cut_tab_width.text()) is None)
+                 or _float(self.cut_tab_rise.text()) is None)):
+            self.message.setText("Enter a valid tab width and tab rise for this cut.")
+            self._operation_selected()
+            return
+        old = replace(operation, suppressed_dogbones=set(operation.suppressed_dogbones))
         operation.depth_mode = (None, "through", "depth")[self.depth_mode.currentIndex()]
         operation.depth = _float(self.cut_depth.text())
         operation.direction = "conventional" if self.direction.currentIndex() else "climb"
+        operation.tabs = self.cut_tabs.isChecked()
+        operation.dogbones = self.cut_dogbones.isChecked()
+        operation.tab_min = self.cut_tab_min.value()
+        operation.tab_max = self.cut_tab_max.value()
+        operation.tab_width = _float(self.cut_tab_width.text())
+        operation.tab_rise = _float(self.cut_tab_rise.text())
+        if operation.tabs and operation.tab_width is None:
+            operation.tab_width = self.job.setup.tab_width or self.job.setup.thickness
+        try:
+            planned_path(self.job, operation, None)
+        except CAMError as exc:
+            operation.__dict__.update(old.__dict__)
+            self._operation_selected()
+            self.message.setText(str(exc))
+            return
         self.cut_depth.setEnabled(operation.depth_mode == "depth")
         self._update_operation_list()
+        self._operation_selected()
+        self._refresh()
+
+    def _toggle_dogbone_candidate(self, item: QListWidgetItem) -> None:
+        if self._refreshing:
+            return
+        operation = self._current_operation()
+        if operation is None:
+            return
+        index = item.data(Qt.ItemDataRole.UserRole)
+        old = set(operation.suppressed_dogbones)
+        if item.checkState() == Qt.CheckState.Checked:
+            operation.suppressed_dogbones.discard(index)
+        else:
+            operation.suppressed_dogbones.add(index)
+        try:
+            planned_path(self.job, operation, None)
+        except CAMError as exc:
+            operation.suppressed_dogbones = old
+            self.message.setText(str(exc))
+            self._operation_selected()
+            return
         self._refresh()
 
     def _remove_operation(self) -> None:
@@ -439,6 +681,17 @@ class MainWindow(QMainWindow):
                 marker = self.scene.addEllipse(x - radius, y - radius, 2 * radius, 2 * radius,
                                                QPen(QColor(color)), QColor(color))
                 marker.setZValue(5)
+                if planned.tabs:
+                    segments = split_for_tabs(planned.points, planned.tabs, planned.tab_width)
+                    tab_pen = QPen(QColor("#f5c46b"), 4)
+                    tab_pen.setCosmetic(True)
+                    for (a, is_tab), (b, _) in zip(segments, segments[1:]):
+                        if is_tab:
+                            self.scene.addLine(a[0], a[1], b[0], b[1], tab_pen).setZValue(6)
+                for bx, by in planned.dogbones:
+                    relief = self.scene.addEllipse(bx - radius, by - radius, 2 * radius, 2 * radius,
+                                                   QPen(QColor("#eaa76a")), QColor("#eaa76a"))
+                    relief.setZValue(6)
             if fit:
                 self.canvas.fit_drawing()
         else:

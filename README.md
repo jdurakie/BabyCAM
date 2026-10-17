@@ -29,12 +29,19 @@ Or install the project into a Python 3.11+ virtual environment and run
 3. Enter the endmill's name, diameter, feed, plunge feed, RPM, and stepdown in
    **Endmill**, then confirm it can plunge. These cutting values have no
    fabricated defaults.
-4. Select one or more closed contours and assign an inside or outside cut.
+4. Optionally enable **Always create tabs** or **Always create dogbones** in
+   **Setup**. These switches apply to newly assigned cuts; each cut can override
+   them in **Cuts**. Tab count, width, and rise can also be changed per cut.
+5. Use **Save/update preset** to keep an endmill in the global tool library.
+   **Use preset** copies it into the current job;
+   edits to that job copy do not change the preset.
+6. Select one or more closed contours and assign an inside or outside cut.
    Select each cut and explicitly choose **Through** or **To depth**.
-5. Inspect the cutter-center paths and export a GRBL `.nc` file.
+7. Inspect the cutter-center paths, tabs, and dogbones, then export a GRBL `.nc` file.
 
-The current slice has one active endmill and no tabs, dogbones, project saving,
-or packaged installers yet. The preview distinguishes Through cuts by color.
+The current build has one active endmill and no project saving or packaged
+installers yet. The preview distinguishes Through cuts by color. Spindle control
+starts unchecked; enable it only when the controller should emit M3/M5.
 Negative XY is allowed and reported; the stock thickness is required, while
 stock width and height are optional. Validate machine setup and cutting
 parameters before running exported code.

@@ -7,9 +7,10 @@ from pathlib import Path
 import ezdxf
 from ezdxf import units
 
-from babycam.cam import CAMError, grbl_gcode, plan_program, profile_path
+from babycam.cam import CAMError, dogbone_centers, grbl_gcode, plan_program, profile_path
 from babycam.dxf_import import UnitSelectionRequired, load_dxf
-from babycam.model import Job, Operation, Setup, Tool
+from babycam.model import Contour, Drawing, Job, Operation, Setup, Tool
+from babycam.tool_library import copy_tool, load_tools, save_tools
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "keyboard_plate.dxf"
@@ -20,7 +21,7 @@ def keyboard_job() -> Job:
     job = Job(
         drawing=drawing,
         tool=Tool(3, "1 mm flat", 1.0, 600, 250, 18000, 1.5, True, 8),
-        setup=Setup(thickness=6, safe_z=5),
+        setup=Setup(thickness=6, safe_z=5, automatic_spindle=True),
     )
     job.operations = [Operation(contour.id, "outside" if contour.layer == "OUTER" else "inside", "through")
                       for contour in drawing.contours]
@@ -87,6 +88,9 @@ class ImportTests(unittest.TestCase):
 
 
 class ProgramTests(unittest.TestCase):
+    def test_default_spindle_mode_is_manual(self):
+        self.assertFalse(Setup().automatic_spindle)
+
     def test_keyboard_profiles_depths_safe_rapids_and_parking(self):
         job = keyboard_job()
         program = plan_program(job)
@@ -148,6 +152,53 @@ class ProgramTests(unittest.TestCase):
         self.assertIn("Start spindle manually before cutting", gcode)
         self.assertNotIn("M3", gcode)
         self.assertNotIn("M5", gcode)
+
+    def test_tabs_limit_cut_depth_at_selected_intervals(self):
+        job = keyboard_job()
+        outer = next(op for op in job.operations if op.side == "outside")
+        job.operations = [outer]
+        outer.tabs = True
+        program = plan_program(job)
+        self.assertGreaterEqual(len(program.paths[0].tabs), 2)
+        self.assertLessEqual(len(program.paths[0].tabs), 4)
+        self.assertEqual(program.paths[0].tab_width, 6)
+        z_values = [move.z for move in program.moves if move.z is not None]
+        self.assertIn(-1.5, z_values)  # 75% rise leaves 25% of 6 mm cut depth.
+        self.assertIn(-6.1, z_values)
+        self.assertIn(-1.5, z_values[z_values.index(-6.1) + 1:])
+
+    def test_impossible_tabs_are_rejected_during_path_creation(self):
+        job = keyboard_job()
+        outer = next(op for op in job.operations if op.side == "outside")
+        outer.tabs = True
+        outer.tab_width = 100
+        with self.assertRaisesRegex(CAMError, "tab"):
+            plan_program(job)
+
+    def test_dogbones_only_on_cutter_side_corners(self):
+        contour = Contour("square", "CUT", ((0, 0), (20, 0), (20, 20), (0, 20), (0, 0)))
+        job = Job(Drawing(Path("square.dxf"), "mm", [contour], [], [], (0, 0, 20, 20)),
+                  Tool(1, "flat", 1, 500, 200, 18000, 2, True, 10),
+                  Setup(thickness=6, safe_z=5))
+        inside = Operation("square", "inside", "through", dogbones=True)
+        outside = Operation("square", "outside", "through", dogbones=True)
+        self.assertEqual(len(dogbone_centers(job, inside)), 4)
+        self.assertEqual(dogbone_centers(job, outside), ())
+        self.assertTrue(all(center in profile_path(job, inside)
+                            for center in dogbone_centers(job, inside)))
+        inside.suppressed_dogbones.add(0)
+        self.assertEqual(len(dogbone_centers(job, inside)), 3)
+
+    def test_global_tool_preset_is_copied_into_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tools.json"
+            preset = Tool(3, "1 mm flat", 1, 600, 250, 18000, 1.5, True, 8)
+            save_tools([preset], path)
+            loaded = load_tools(path)
+            job_tool = copy_tool(loaded[0])
+            job_tool.feed = 800
+            self.assertEqual(loaded[0].feed, 600)
+            self.assertEqual(load_tools(path)[0].feed, 600)
 
 
 if __name__ == "__main__":

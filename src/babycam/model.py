@@ -41,7 +41,7 @@ class Tool:
     plunge: float | None = None
     rpm: int | None = None
     stepdown: float | None = None
-    can_plunge: bool = True
+    can_plunge: bool = False
     cutting_length: float | None = None
 
 
@@ -53,7 +53,14 @@ class Setup:
     offset_y: float = 0.0
     through_allowance: float = 0.1
     spindle_delay: float = 2.0
-    automatic_spindle: bool = True
+    automatic_spindle: bool = False
+    default_tabs: bool = False
+    default_dogbones: bool = False
+    tab_min: int = 2
+    tab_max: int = 4
+    tab_width: float | None = None  # None follows measured stock thickness.
+    tab_rise: float = 75.0
+    dogbone_clearance: float = 0.25
     stock_width: float | None = None
     stock_height: float | None = None
 
@@ -65,6 +72,13 @@ class Operation:
     depth_mode: str | None = None  # through | depth
     depth: float | None = None
     direction: str = "climb"  # climb | conventional
+    tabs: bool = False
+    dogbones: bool = False
+    tab_min: int | None = None
+    tab_max: int | None = None
+    tab_width: float | None = None
+    tab_rise: float | None = None
+    suppressed_dogbones: set[int] = field(default_factory=set)
 
 
 @dataclass

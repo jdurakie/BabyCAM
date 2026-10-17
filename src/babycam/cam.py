@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from shapely.geometry import Polygon
 
 from .model import Contour, Job, Operation, Point
+from .path_edits import add_dogbones, dogbone_candidates, place_tabs, split_for_tabs
 
 
 class CAMError(ValueError):
@@ -20,6 +21,9 @@ class PlannedPath:
     operation: Operation
     points: tuple[Point, ...]
     target_depth: float | None
+    tabs: tuple[float, ...] = ()
+    tab_width: float = 0.0
+    dogbones: tuple[Point, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,24 @@ def _start_on_long_edge(points: list[Point]) -> tuple[Point, ...]:
     return tuple([middle] + points[index + 1:-1] + points[:index + 1] + [middle])
 
 
+def dogbone_centers(job: Job, operation: Operation, *, include_suppressed: bool = False) -> tuple[Point, ...]:
+    if not operation.dogbones or job.drawing is None:
+        return ()
+    contour = next((c for c in job.drawing.contours if c.id == operation.contour_id), None)
+    if contour is None:
+        raise CAMError("Dogbone contour no longer exists.")
+    min_x, min_y, _, _ = job.drawing.bounds
+    placed = tuple((x - min_x + job.setup.offset_x, y - min_y + job.setup.offset_y)
+                   for x, y in contour.points)
+    _positive(job.tool.diameter, "endmill diameter")
+    clearance = job.setup.dogbone_clearance
+    if not math.isfinite(clearance) or clearance < 0:
+        raise CAMError("Dogbone extra clearance cannot be negative.")
+    candidates = dogbone_candidates(placed, operation.side, clearance)
+    return candidates if include_suppressed else tuple(
+        p for i, p in enumerate(candidates) if i not in operation.suppressed_dogbones)
+
+
 def profile_path(job: Job, operation: Operation) -> tuple[Point, ...]:
     drawing = job.drawing
     if drawing is None:
@@ -96,7 +118,35 @@ def profile_path(job: Job, operation: Operation) -> tuple[Point, ...]:
     wants_ccw = (operation.side == "inside") == climb
     if (_signed_area(ring) > 0) != wants_ccw:
         ring.reverse()
-    return _start_on_long_edge(ring)
+    path = _start_on_long_edge(ring)
+    if operation.dogbones:
+        try:
+            path = add_dogbones(path, dogbone_centers(job, operation), radius)
+        except ValueError as exc:
+            raise CAMError(str(exc)) from exc
+    return path
+
+
+def planned_path(job: Job, operation: Operation, depth: float | None) -> PlannedPath:
+    points = profile_path(job, operation)
+    centers = dogbone_centers(job, operation)
+    if not operation.tabs:
+        return PlannedPath(operation, points, depth, dogbones=centers)
+    width = operation.tab_width if operation.tab_width is not None else job.setup.tab_width
+    if width is None:
+        width = _positive(job.setup.thickness, "measured stock thickness")
+    width = _positive(width, "tab width")
+    minimum = operation.tab_min if operation.tab_min is not None else job.setup.tab_min
+    maximum = operation.tab_max if operation.tab_max is not None else job.setup.tab_max
+    rise = operation.tab_rise if operation.tab_rise is not None else job.setup.tab_rise
+    if not math.isfinite(rise) or not 0 < rise <= 100:
+        raise CAMError("Tab rise must be greater than 0% and at most 100%.")
+    try:
+        tabs = place_tabs(points, width, minimum, maximum, _positive(job.tool.diameter, "endmill diameter") / 2,
+                          centers)
+    except ValueError as exc:
+        raise CAMError(str(exc)) from exc
+    return PlannedPath(operation, points, depth, tabs, width, centers)
 
 
 def target_depth(job: Job, operation: Operation) -> float:
@@ -113,12 +163,11 @@ def preview_paths(job: Job) -> tuple[list[PlannedPath], list[str]]:
     errors: list[str] = []
     for operation in sorted(job.operations, key=lambda op: op.side == "outside"):
         try:
-            points = profile_path(job, operation)
             try:
                 depth = target_depth(job, operation)
             except CAMError:
                 depth = None
-            result.append(PlannedPath(operation, points, depth))
+            result.append(planned_path(job, operation, depth))
         except CAMError as exc:
             errors.append(str(exc))
     return result, errors
@@ -163,7 +212,7 @@ def plan_program(job: Job) -> Program:
         depth = target_depth(job, operation)
         if tool.cutting_length is not None and depth > tool.cutting_length + 1e-8:
             raise CAMError(f"Cut depth {number(depth)} mm exceeds the endmill's usable cutting length.")
-        paths.append(PlannedPath(operation, profile_path(job, operation), depth))
+        paths.append(planned_path(job, operation, depth))
 
     warnings: list[str] = []
     if tool.cutting_length is None:
@@ -185,12 +234,26 @@ def plan_program(job: Job) -> Program:
     moves: list[Move] = [Move("G0", z=safe_z)]
     for path in paths:
         start_x, start_y = path.points[0]
+        segments = split_for_tabs(path.points, path.tabs, path.tab_width) if path.tabs else ()
+        rise = path.operation.tab_rise if path.operation.tab_rise is not None else job.setup.tab_rise
+        nominal = thickness if path.operation.depth_mode == "through" else path.target_depth
+        tab_depth = nominal * (1 - rise / 100)
         for depth in _depths(path.target_depth, stepdown):
             if moves[-1].kind != "G0" or moves[-1].z != safe_z:
                 moves.append(Move("G0", z=safe_z))
             moves.append(Move("G0", x=start_x, y=start_y))
-            moves.append(Move("G1", z=-depth, feed=plunge))
-            moves.extend(Move("G1", x=x, y=y, feed=feed) for x, y in path.points[1:])
+            if not segments:
+                moves.append(Move("G1", z=-depth, feed=plunge))
+                moves.extend(Move("G1", x=x, y=y, feed=feed) for x, y in path.points[1:])
+            else:
+                current_depth: float | None = None
+                for i in range(len(segments) - 1):
+                    wanted = min(depth, tab_depth) if segments[i][1] else depth
+                    if current_depth is None or abs(wanted - current_depth) > 1e-8:
+                        moves.append(Move("G1", z=-wanted, feed=plunge))
+                        current_depth = wanted
+                    x, y = segments[i + 1][0]
+                    moves.append(Move("G1", x=x, y=y, feed=feed))
         moves.append(Move("G0", z=safe_z))
     # Last X is intentionally retained; stock height does not determine parking.
     moves.append(Move("G0", y=max_y))
