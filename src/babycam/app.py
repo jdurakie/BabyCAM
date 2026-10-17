@@ -14,10 +14,10 @@ from ezdxf import units
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPen, QTransform
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGraphicsItem,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGraphicsItem,
     QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPushButton, QSplitter, QSpinBox, QTabWidget, QVBoxLayout, QWidget, QInputDialog,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
+    QPushButton, QSplitter, QSpinBox, QStyle, QTabWidget, QVBoxLayout, QWidget, QInputDialog,
 )
 
 from .cam import (CAMError, dogbone_centers, grbl_gcode, number, plan_program, planned_path,
@@ -109,14 +109,20 @@ class MainWindow(QMainWindow):
         splitter.setSizes([235, 760, 305])
         splitter.setStretchFactor(1, 1)
 
-        self.message = QLabel("Open a DXF to begin.")
+        self.message_panel = QFrame()
+        self.message_panel.setFrameShape(QFrame.Shape.StyledPanel)
+        message_layout = QHBoxLayout(self.message_panel)
+        message_layout.setContentsMargins(8, 5, 8, 5)
+        self.message_icon = QLabel()
+        message_layout.addWidget(self.message_icon)
+        self.message = QLabel()
         self.message.setWordWrap(True)
-        self.message.setMinimumHeight(42)
-        self.message.setStyleSheet("padding: 6px; color: #4f3a0b; background: #fff3cf;")
+        self.message_panel.setMinimumHeight(42)
+        message_layout.addWidget(self.message, 1)
         root = QWidget()
         layout = QVBoxLayout(root)
         layout.addWidget(splitter, 1)
-        layout.addWidget(self.message)
+        layout.addWidget(self.message_panel)
         self.setCentralWidget(root)
 
         open_action = QAction("Open DXF…", self)
@@ -134,7 +140,17 @@ class MainWindow(QMainWindow):
         toolbar.addAction(export_action)
         self._refresh()
         if self.library_error:
-            self.message.setText(self.library_error)
+            self._set_message(self.library_error, error=True)
+
+    def _set_message(self, text: str, *, error: bool = False) -> None:
+        self.message.setText(f"Error: {text}" if error else text)
+        font = self.message.font()
+        font.setBold(error)
+        self.message.setFont(font)
+        self.message_icon.setVisible(error)
+        if error:
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
+            self.message_icon.setPixmap(icon.pixmap(20, 20))
 
     def _field(self, form: QFormLayout, label: str, initial: str = "", hint: str = "") -> QLineEdit:
         field = QLineEdit(initial)
@@ -187,12 +203,16 @@ class MainWindow(QMainWindow):
         self._refresh_preset_picker()
         form.addRow("Global tool library", self.preset_picker)
         preset_row = QHBoxLayout()
-        for label, callback in (("Use preset", self._use_preset),
-                                ("Save/update preset", self._save_preset),
-                                ("Delete preset", self._delete_preset)):
-            button = QPushButton(label)
-            button.clicked.connect(callback)
-            preset_row.addWidget(button)
+        use_button = QPushButton("Use selected preset")
+        use_button.clicked.connect(self._use_preset)
+        preset_row.addWidget(use_button)
+        manage_button = QPushButton("Manage presets…")
+        manage_menu = QMenu(manage_button)
+        manage_menu.addAction("Save or update current endmill…", self._save_preset)
+        manage_menu.addSeparator()
+        manage_menu.addAction("Delete selected preset…", self._delete_preset)
+        manage_button.setMenu(manage_menu)
+        preset_row.addWidget(manage_button)
         form.addRow(preset_row)
         form.addRow(QLabel("The job uses a copy. Editing it does not change the preset."))
         self.tool_name = self._field(form, "Endmill name", hint="required")
@@ -347,23 +367,29 @@ class MainWindow(QMainWindow):
     def _use_preset(self) -> None:
         index = self.preset_picker.currentIndex()
         if index < 0:
-            self.message.setText("The tool library is empty. Enter an endmill and save it as a preset.")
+            self._set_message("The tool library is empty. Enter an endmill and save it as a preset.", error=True)
             return
         self.job.tool = copy_tool(self.tool_presets[index])
         self._show_tool(self.job.tool)
 
     def _save_preset(self) -> None:
         if self.library_error:
-            self.message.setText(self.library_error + " Repair the library file before saving presets.")
+            self._set_message(self.library_error + " Repair the library file before saving presets.", error=True)
             return
         tool = self.job.tool
         if (not tool.name or tool.number < 1 or
                 any(value is None or value <= 0 for value in
                     (tool.diameter, tool.feed, tool.plunge, tool.rpm, tool.stepdown))):
-            self.message.setText("Complete the endmill name, number, diameter, feeds, RPM, and stepdown before saving a preset.")
+            self._set_message("Complete the endmill name, number, diameter, feeds, RPM, and stepdown before saving a preset.", error=True)
             return
         previous = next((i for i, preset in enumerate(self.tool_presets)
                          if preset.name == tool.name), None)
+        if previous is not None and QMessageBox.question(
+                self, "Update endmill preset",
+                f"Replace the global preset '{tool.name}' with the current job endmill?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
         updated = [copy_tool(preset) for preset in self.tool_presets]
         if previous is None:
             updated.append(copy_tool(tool))
@@ -374,26 +400,32 @@ class MainWindow(QMainWindow):
         try:
             save_tools(updated)
         except OSError as exc:
-            self.message.setText(f"Could not save tool library: {exc}")
+            self._set_message(f"Could not save tool library: {exc}", error=True)
             return
         self.tool_presets = updated
         self._refresh_preset_picker()
         self.preset_picker.setCurrentIndex(selected)
-        self.message.setText(f"Saved global endmill preset: {tool.name}.")
+        self._set_message(f"Saved global endmill preset: {tool.name}.")
 
     def _delete_preset(self) -> None:
         index = self.preset_picker.currentIndex()
         if index < 0:
             return
+        name = self.tool_presets[index].name
+        if QMessageBox.question(
+                self, "Delete endmill preset", f"Delete the global preset '{name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
         remaining = self.tool_presets[:index] + self.tool_presets[index + 1:]
         try:
             save_tools(remaining)
         except OSError as exc:
-            self.message.setText(f"Could not update tool library: {exc}")
+            self._set_message(f"Could not update tool library: {exc}", error=True)
             return
         self.tool_presets = remaining
         self._refresh_preset_picker()
-        self.message.setText("Deleted preset. The current job endmill is unchanged.")
+        self._set_message("Deleted preset. The current job endmill is unchanged.")
 
     def _blank_tool(self) -> None:
         self.job.tool = Tool()
@@ -433,15 +465,15 @@ class MainWindow(QMainWindow):
 
     def _assign(self, side: str) -> None:
         if self.job.drawing is None:
-            self.message.setText("Open a DXF first.")
+            self._set_message("Open a DXF first.", error=True)
             return
         if not self.job.tool.name or not self.job.tool.diameter or not self.job.tool.can_plunge:
-            self.message.setText("Enter an endmill name and diameter and confirm it can plunge before assigning cuts.")
+            self._set_message("Enter an endmill name and diameter and confirm it can plunge before assigning cuts.", error=True)
             self.tabs.setCurrentIndex(1)
             return
         selected = [item.data(Qt.ItemDataRole.UserRole) for item in self.contours.selectedItems()]
         if not selected:
-            self.message.setText("Select one or more DXF contours first.")
+            self._set_message("Select one or more DXF contours first.", error=True)
             return
         added: list[str] = []
         creation_error: str | None = None
@@ -474,7 +506,7 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(2)
         self._refresh()
         if creation_error:
-            self.message.setText(creation_error)
+            self._set_message(creation_error, error=True)
 
     def _update_operation_list(self) -> None:
         current = self._current_operation()
@@ -491,7 +523,11 @@ class MainWindow(QMainWindow):
                 if operation.tabs:
                     item.setText(item.text() + " · Tabs")
                 if operation.dogbones:
-                    item.setText(item.text() + " · Dogbones")
+                    try:
+                        count = len(dogbone_centers(self.job, operation))
+                        item.setText(item.text() + f" · Dogbones {count}")
+                    except CAMError:
+                        item.setText(item.text() + " · Dogbones")
                 item.setData(Qt.ItemDataRole.UserRole, operation.contour_id)
                 self.operations.addItem(item)
                 if operation.contour_id == old_id:
@@ -529,8 +565,12 @@ class MainWindow(QMainWindow):
         self.dogbone_list.clear()
         if operation and operation.dogbones:
             try:
-                for index, (x, y) in enumerate(dogbone_centers(
-                        self.job, operation, include_suppressed=True)):
+                candidates = dogbone_centers(self.job, operation, include_suppressed=True)
+                if not candidates:
+                    item = QListWidgetItem("No sharp cutter-side corners found")
+                    item.setFlags(Qt.ItemFlag.NoItemFlags)
+                    self.dogbone_list.addItem(item)
+                for index, (x, y) in enumerate(candidates):
                     item = QListWidgetItem(f"Corner {index + 1}: X {number(x)}, Y {number(y)}")
                     item.setData(Qt.ItemDataRole.UserRole, index)
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -556,8 +596,8 @@ class MainWindow(QMainWindow):
         if (self.cut_tabs.isChecked() and
                 ((self.cut_tab_width.text().strip() and _float(self.cut_tab_width.text()) is None)
                  or _float(self.cut_tab_rise.text()) is None)):
-            self.message.setText("Enter a valid tab width and tab rise for this cut.")
             self._operation_selected()
+            self._set_message("Enter a valid tab width and tab rise for this cut.", error=True)
             return
         old = replace(operation, suppressed_dogbones=set(operation.suppressed_dogbones))
         operation.depth_mode = (None, "through", "depth")[self.depth_mode.currentIndex()]
@@ -576,7 +616,7 @@ class MainWindow(QMainWindow):
         except CAMError as exc:
             operation.__dict__.update(old.__dict__)
             self._operation_selected()
-            self.message.setText(str(exc))
+            self._set_message(str(exc), error=True)
             return
         self.cut_depth.setEnabled(operation.depth_mode == "depth")
         self._update_operation_list()
@@ -599,8 +639,8 @@ class MainWindow(QMainWindow):
             planned_path(self.job, operation, None)
         except CAMError as exc:
             operation.suppressed_dogbones = old
-            self.message.setText(str(exc))
             self._operation_selected()
+            self._set_message(str(exc), error=True)
             return
         self._refresh()
 
@@ -615,14 +655,13 @@ class MainWindow(QMainWindow):
         if self._refreshing:
             return
         selected_ids = {item.data(0) for item in self.scene.selectedItems() if item.data(0)}
-        if not selected_ids:
-            return
         self.contours.blockSignals(True)
         self.contours.clearSelection()
         for i in range(self.contours.count()):
             item = self.contours.item(i)
             item.setSelected(item.data(Qt.ItemDataRole.UserRole) in selected_ids)
         self.contours.blockSignals(False)
+        self._highlight_contours(selected_ids)
 
     def _contour_selected(self) -> None:
         selected_ids = {item.data(Qt.ItemDataRole.UserRole) for item in self.contours.selectedItems()}
@@ -631,6 +670,19 @@ class MainWindow(QMainWindow):
             if item.data(0):
                 item.setSelected(item.data(0) in selected_ids)
         self._refreshing = False
+        self._highlight_contours(selected_ids)
+
+    def _highlight_contours(self, selected_ids: set[str]) -> None:
+        for item in self.scene.items():
+            identifier = item.data(0)
+            if not identifier:
+                continue
+            selected = identifier in selected_ids
+            color = "#ffe27a" if selected else "#e79081" if item.data(1) else "#d3d8de"
+            pen = QPen(QColor(color), 3.5 if selected else 1.5)
+            pen.setCosmetic(True)
+            item.setPen(pen)
+            item.setZValue(5 if selected else 2)
 
     def _refresh(self, fit: bool = False) -> None:
         if self._refreshing:
@@ -657,13 +709,17 @@ class MainWindow(QMainWindow):
                 pen.setCosmetic(True)
                 self.scene.addPath(_path(placed(reference.points)), pen)
             for contour in drawing.contours:
-                pen = QPen(QColor("#d3d8de" if not contour.error else "#e79081"), 1.5)
+                is_selected = contour.id in selected_ids
+                pen = QPen(QColor("#ffe27a" if is_selected else
+                                  "#e79081" if contour.error else "#d3d8de"),
+                           3.5 if is_selected else 1.5)
                 pen.setCosmetic(True)
                 item = self.scene.addPath(_path(placed(contour.points)), pen)
                 item.setData(0, contour.id)
+                item.setData(1, bool(contour.error))
                 item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
-                item.setZValue(2)
-                item.setSelected(contour.id in selected_ids)
+                item.setZValue(5 if is_selected else 2)
+                item.setSelected(is_selected)
             paths, errors = preview_paths(self.job)
             selected_op = self._current_operation()
             for planned in paths:
@@ -688,10 +744,23 @@ class MainWindow(QMainWindow):
                     for (a, is_tab), (b, _) in zip(segments, segments[1:]):
                         if is_tab:
                             self.scene.addLine(a[0], a[1], b[0], b[1], tab_pen).setZValue(6)
-                for bx, by in planned.dogbones:
-                    relief = self.scene.addEllipse(bx - radius, by - radius, 2 * radius, 2 * radius,
-                                                   QPen(QColor("#eaa76a")), QColor("#eaa76a"))
-                    relief.setZValue(6)
+                relief_pen = QPen(QColor("#f6a552"), 2.5)
+                relief_pen.setCosmetic(True)
+                for i, (bx, by) in enumerate(planned.points):
+                    if (bx, by) not in planned.dogbones:
+                        continue
+                    foot = planned.points[i - 1]
+                    self.scene.addLine(foot[0], foot[1], bx, by, relief_pen).setZValue(7)
+                    cutter_radius = (self.job.tool.diameter or 1) / 2
+                    sweep = self.scene.addEllipse(
+                        bx - cutter_radius, by - cutter_radius, 2 * cutter_radius, 2 * cutter_radius,
+                        QPen(QColor("#f6a552")), QColor(246, 165, 82, 35))
+                    sweep.setZValue(7)
+                    relief = self.scene.addEllipse(-3, -3, 6, 6, relief_pen, QColor(246, 165, 82, 180))
+                    relief.setPos(bx, by)
+                    relief.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                    relief.setData(2, "dogbone")
+                    relief.setZValue(8)
             if fit:
                 self.canvas.fit_drawing()
         else:
@@ -727,11 +796,13 @@ class MainWindow(QMainWindow):
                 self.message.setToolTip("")
             if program.warnings:
                 summary += " · " + " ".join(program.warnings)
-            self.message.setText(summary)
+            self._set_message(summary)
         except CAMError as exc:
             self.export_action.setEnabled(False)
             issue = errors[0] if errors else str(exc)
-            self.message.setText(issue)
+            is_error = bool(errors or self._input_error or (
+                self.job.operations and all(op.depth_mode is not None for op in self.job.operations)))
+            self._set_message(issue, error=is_error)
         self._refreshing = False
 
     def _export(self) -> None:

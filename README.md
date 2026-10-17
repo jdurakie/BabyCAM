@@ -32,12 +32,15 @@ Or install the project into a Python 3.11+ virtual environment and run
 4. Optionally enable **Always create tabs** or **Always create dogbones** in
    **Setup**. These switches apply to newly assigned cuts; each cut can override
    them in **Cuts**. Tab count, width, and rise can also be changed per cut.
-5. Use **Save/update preset** to keep an endmill in the global tool library.
+5. Use **Manage presets…** to save an endmill in the global tool library.
    **Use preset** copies it into the current job;
    edits to that job copy do not change the preset.
 6. Select one or more closed contours and assign an inside or outside cut.
    Select each cut and explicitly choose **Through** or **To depth**.
 7. Inspect the cutter-center paths, tabs, and dogbones, then export a GRBL `.nc` file.
+
+Dogbones are proposed only at sharp corners on the cutter side of a profile.
+Rounded contours and corners on the opposite side show a count of zero.
 
 The current build has one active endmill and no project saving or packaged
 installers yet. The preview distinguishes Through cuts by color. Spindle control

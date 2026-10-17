@@ -6,9 +6,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import ezdxf
+from ezdxf import units
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
 
 from babycam.app import MainWindow  # noqa: E402
 
@@ -18,6 +22,66 @@ APPLICATION = QApplication.instance() or QApplication([])
 
 
 class UIWorkflowTests(unittest.TestCase):
+    def test_preset_update_and_delete_require_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("babycam.tool_library.library_path", return_value=Path(directory) / "tools.json"):
+                window = MainWindow()
+                for field, value in ((window.tool_name, "flat"), (window.diameter, "1"),
+                                     (window.feed, "600"), (window.plunge, "250"),
+                                     (window.rpm, "18000"), (window.stepdown, "1.5")):
+                    field.setText(value)
+                window._save_preset()
+                window.feed.setText("800")
+                with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+                    window._save_preset()
+                    window._delete_preset()
+                self.assertEqual(window.tool_presets[0].feed, 600)
+                self.assertEqual(window.preset_picker.count(), 1)
+                window.close()
+                window.deleteLater()
+                APPLICATION.processEvents()
+
+    def test_selection_and_errors_are_visible(self):
+        window = MainWindow()
+        window._assign("inside")
+        self.assertTrue(window.message.font().bold())
+        self.assertTrue(window.message.text().startswith("Error:"))
+        self.assertFalse(window.message_icon.isHidden())
+        window.open_dxf(str(FIXTURE))
+        contour_id = window.contours.item(0).data(Qt.ItemDataRole.UserRole)
+        path_item = next(item for item in window.scene.items() if item.data(0) == contour_id)
+        normal_width = path_item.pen().widthF()
+        window.contours.setCurrentRow(0)
+        self.assertGreater(path_item.pen().widthF(), normal_width)
+        window.close()
+        window.deleteLater()
+        APPLICATION.processEvents()
+
+    def test_sharp_inside_corners_have_visible_dogbones(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "square.dxf"
+            doc = ezdxf.new("R2010")
+            doc.units = units.MM
+            doc.modelspace().add_lwpolyline([(0, 0), (20, 0), (20, 20), (0, 20)], close=True)
+            doc.saveas(source)
+            window = MainWindow()
+            window.open_dxf(str(source))
+            for field, value in ((window.thickness, "6"), (window.safe_z, "5"),
+                                 (window.tool_name, "flat"), (window.diameter, "1"),
+                                 (window.feed, "600"), (window.plunge, "250"),
+                                 (window.rpm, "18000"), (window.stepdown, "1.5")):
+                field.setText(value)
+            window.can_plunge.setChecked(True)
+            window.contours.setCurrentRow(0)
+            window._assign("inside")
+            window.cut_dogbones.setChecked(True)
+            self.assertEqual(window.dogbone_list.count(), 4)
+            self.assertIn("Dogbones 4", window.operations.item(0).text())
+            self.assertEqual(sum(item.data(2) == "dogbone" for item in window.scene.items()), 4)
+            window.close()
+            window.deleteLater()
+            APPLICATION.processEvents()
+
     def test_tool_library_copies_preset_into_job(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch("babycam.tool_library.library_path", return_value=Path(directory) / "tools.json"):
@@ -27,7 +91,9 @@ class UIWorkflowTests(unittest.TestCase):
                                      (window.rpm, "18000"), (window.stepdown, "1.5")):
                     field.setText(value)
                 window.can_plunge.setChecked(True)
-                window._save_preset()
+                manage = next(button for button in window.findChildren(QPushButton)
+                              if button.text() == "Manage presets…")
+                manage.menu().actions()[0].trigger()
                 self.assertEqual(window.preset_picker.count(), 1)
                 window.feed.setText("800")
                 self.assertEqual(window.tool_presets[0].feed, 600)
@@ -58,6 +124,8 @@ class UIWorkflowTests(unittest.TestCase):
         self.assertEqual(window.operations.count(), 1)
         self.assertTrue(window.job.operations[0].tabs)
         self.assertTrue(window.job.operations[0].dogbones)
+        self.assertIn("Dogbones 0", window.operations.item(0).text())
+        self.assertEqual(window.dogbone_list.item(0).text(), "No sharp cutter-side corners found")
         window.cut_tabs.setChecked(False)
         self.assertFalse(window.job.operations[0].tabs)
         window.close()
