@@ -3,9 +3,10 @@
 ## Goal
 
 A fast desktop workflow for ordinary 2.5D router jobs: open a DXF, choose an
-endmill, assign operations to visible geometry, inspect the toolpaths, and save
-GRBL G-code. Linux is the primary development platform; Windows and macOS are
-release targets. All internal dimensions and emitted coordinates use mm.
+endmill, assign inside and outside profiles to visible geometry, adjust their
+dogbones and holding tabs, inspect the toolpaths, and save GRBL G-code. Linux is
+the primary development platform; Windows and macOS are release targets. All
+internal dimensions and emitted coordinates use mm.
 
 ## First useful release
 
@@ -16,28 +17,39 @@ release targets. All internal dimensions and emitted coordinates use mm.
    warnings. Require the user to confirm units when the DXF is unitless or its
    units are ambiguous. Convert once to mm; retain the source units in the
    project. Do not silently alter geometry to make a cut possible.
-2. **Set up the job.** Define stock width, height, thickness, XY origin, Z zero
-   on stock top, safe Z, and a single active endmill. Draw the stock boundary and
-   origin on the canvas. The first postprocessor targets GRBL with G21, G90,
-   G17, G94, and G54.
+2. **Set up the job.** Define stock width, height, thickness, XY origin at its
+   lower-left corner, Z zero on stock top, safe Z, and one active endmill. Keep
+   the DXF coordinates intact; show a separate placement offset on the stock.
+   Suggest a placement with cutter clearance, and let the user edit its X/Y
+   offset. Draw the stock boundary, placement, and origin on the canvas. The
+   first postprocessor targets GRBL with G21, G90, G17, G94, and G54.
 3. **Assign operations.** Select a contour by clicking it or select a layer to
-   batch assign. Provide outside profile, inside profile, pocket, and circular
-   hole operations. Each operation exposes only its relevant settings: final
-   depth, stepdown, stepover for pockets, feed, plunge, spindle speed, cut
-   direction, and optional tabs for outside profiles. Offer a "cut through"
-   depth from stock thickness plus a small user-set allowance.
-4. **Preview and export.** Overlay cutter-center paths, entry points, tabs,
-   travel moves, cut order, and depth passes. Give a compact job summary and
-   block export on invalid geometry, impossible offsets, out-of-stock motion,
-   unsafe rapid XY motion, or missing required settings. Write one `.nc` file
-   for the active endmill; tool changes are a later feature.
-5. **Reopen a job.** Save a small project file with the DXF reference/hash,
+   batch assign. Provide outside and inside profiles. Each operation has a final
+   depth, stepdown, feed, plunge, spindle speed, and cut direction. Offer a
+   "cut through" depth from stock thickness plus a user-set allowance.
+4. **Edit paths.** Let the user click eligible corners to add or remove dogbone
+   overcuts, without changing the source DXF. Let the user place, move, and
+   remove holding tabs on outside profiles, with width and remaining height
+   controls. Suggest tab positions automatically, then permit manual edits.
+   Display the resulting cutter sweep and warn when a relief or tab does not
+   fit its local geometry or stock clearance.
+5. **Preview and export.** Overlay cutter-center paths, entry points, dogbones,
+   tabs, travel moves, cut order, and depth passes. Give a compact job summary
+   and block export on invalid geometry, impossible offsets, unsafe rapid XY
+   motion, or missing required settings. Warn and require an explicit choice
+   when the cutter sweep extends beyond stock; cutting a stock edge can be
+   intentional. Write one `.nc` file for the active endmill.
+6. **Reopen a job.** Save a small project file with the DXF reference/hash,
    confirmed units, stock/setup, tool snapshot, operation assignments, and
-   order. Keep a separate editable tool library. Warn when a referenced DXF
-   has changed or moved.
+   order, including dogbone and tab edits. Keep a separate editable tool
+   library. Warn when a referenced DXF has changed or moved.
 
-The first release does not need a machine connection, 3D toolpaths, V-carving,
-adaptive clearing, automatic nesting, or a library of postprocessors.
+The first release does not need pockets, hole clearing, a machine connection,
+3D toolpaths, V-carving, adaptive clearing, automatic nesting, or a library of
+postprocessors. A second revision should support multiple endmills and a
+G-code output option for Z zero on stock bottom. Operation depths remain
+defined from stock top in both revisions; only the postprocessor's Z-coordinate
+translation changes.
 
 ## Main window
 
@@ -51,14 +63,19 @@ for each contour.
 ## Code boundaries
 
 ```text
-DXF file → import/normalize → contours in mm → operations → toolpath moves
-                                             ↓                  ↓
-                                      project/tool library   preview + GRBL post
+DXF file → import/normalize → contours in mm → operations + path edits → moves
+                                             ↓                            ↓
+                                      project/tool library        preview + GRBL post
 ```
 
 Keep the CAM core independent of Qt. Use a small typed model for contours,
-tools, stock, operations, and moves. The preview and postprocessor must consume
-the same calculated moves so they cannot disagree about cut order or clearance.
+tools, stock, operations, corner reliefs, tabs, and moves. Store operation depths
+as positive distances below the stock top. The first postprocessor emits
+`Z = -depth`; a later stock-bottom-zero mode can emit
+`Z = stock_thickness - depth`. The preview and postprocessor must consume the
+same calculated moves so they cannot disagree about cut order or clearance.
+Operations should already refer to a tool ID or snapshot, while the first
+release validates that all enabled operations use the one active endmill.
 
 Proposed Python modules: `dxf_import`, `geometry`, `model`, `toolpaths`,
 `post/grbl`, `project`, and `ui`. PySide6/Qt Widgets fits a native desktop UI
@@ -69,41 +86,51 @@ on Linux.
 
 ## Relationship to fast_cabinet
 
-Use `fast_cabinet/gcode.py` as the reference for
-`Program`, depth scheduling, profile offsets, tab placement, circular-hole
-clearing, and GRBL conventions. Adapt and test these as standalone functions.
+Use `fast_cabinet/gcode.py` as the reference for `Program`, depth scheduling,
+profile offsets, tab placement, and GRBL conventions. Use
+`fast_cabinet/cabinet.py`'s `dogbone_outline` as a geometric reference. Adapt
+and test these as standalone functions.
 Do not carry over `cabinet.Part`, sheet packing, SVG Y-flipping, or the current
 cabinet-specific waste-web rules. A general CAM job needs operation-specific
 clearance checks and DXF modelspace coordinates.
 
-The current fast_cabinet generator has **no DXF parser or general pocket
-toolpath**. Pocket clearing and contour reconstruction are new work, not
-extraction tasks. The existing tests are useful as behavioral examples for
-safe rapids, stepdowns, tabs, and bounds.
+The current fast_cabinet generator has **no DXF parser**. Contour
+reconstruction and interactive path edits are new work, not extraction tasks.
+The existing tests are useful as behavioral examples for safe rapids,
+stepdowns, tabs, and bounds.
 
 ## Implementation sequence and acceptance checks
 
 | Milestone | Result | Done when |
 | --- | --- | --- |
-| 1. Vertical slice | Open a simple DXF, select a loop, assign an outside profile, preview, export GRBL | A rectangle and circle produce correct cutter offsets, multiple depths, optional tabs, and safe retracts. |
-| 2. Useful operations | Inside profiles, circular holes, and pockets | Nested contours, tight features, and tool-too-large cases either cut correctly or give a clear error. |
-| 3. Daily-use polish | Tool library, project save/reopen, layer selection, operation ordering | A saved job reopens with the same toolpaths; changed DXF is detected. |
+| 1. Vertical slice | Open the Keyboard plate DXF, assign its outer and inner profiles, preview, export GRBL | The outer contour is offset outward, the two inner contours inward, with correct depths and safe retracts. |
+| 2. Path edits | Add/remove dogbones and place/move/delete holding tabs | The preview and G-code agree; tool-too-large corners and invalid tab sites give clear errors. |
+| 3. Daily-use polish | Tool library, project save/reopen, layer selection, operation ordering | A saved job reopens with the same toolpaths and edits; changed DXF is detected. |
 | 4. Distribution | Native builds for Linux, Windows, and macOS | A clean-machine smoke test opens a DXF and exports matching G-code on each OS. |
 
-Use small DXF fixtures for straight segments, arcs, bulges, circles, nested
-loops, unitless files, and malformed contours. Verify generated moves against
+The Keyboard project's `plate_test/test_plate_2u_cut.dxf` is the first real
+fixture: millimeters (`$INSUNITS=4`), three valid closed LWPOLYLINEs on OUTER,
+SWITCH, and STABILIZER layers. The two inner contours are distinct and fully
+inside the outer contour. STABILIZER has eight sharp corners suitable for
+testing dogbone selection; OUTER and SWITCH are rounded. Keep a copy or derived
+fixture in BabyCAM's tests when implementation begins, so tests do not depend
+on another checkout.
+
+Add small DXF fixtures for arcs, bulges, circles, unitless files, and malformed
+contours. Verify generated moves against
 invariants: all XY rapids happen above the work, Z never exceeds configured
 limits, offsets stay within stock, and the final depth matches the job. Inspect
 representative `.nc` files in a simulator before calling a milestone complete.
 
-## Decisions to settle together
+## Remaining interaction decisions
 
-1. Confirm GRBL as the first and only controller dialect, with the machine
-   origin at stock lower-left and Z zero on top.
-2. Confirm that pockets belong in the first useful release. They are the
-   largest new CAM algorithm after DXF import.
-3. Choose the initial DXF source examples, ideally two or three files you
-   regularly cut, to anchor interaction and geometry edge cases.
+1. Dogbones: default to manually selecting sharp corners, with a later
+   "suggest all eligible" action. Confirm the desired relief style: diagonal
+   dogbone, T-bone, or both.
+2. Tabs: default to automatic suggestions with direct drag-to-adjust. Confirm
+   whether tabs should also be available on inside profiles.
+3. Clarify whether the suggested stock placement should be automatic by
+   default or preserve the DXF's original X/Y location until the user moves it.
 
 ## References
 
