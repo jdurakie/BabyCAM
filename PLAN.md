@@ -19,20 +19,29 @@ internal dimensions and emitted coordinates use mm.
    project. Do not silently alter geometry to make a cut possible.
 2. **Set up the job.** Define stock width, height, thickness, XY origin at its
    lower-left corner, Z zero on stock top, safe Z, and one active endmill. Keep
-   the DXF coordinates intact; show a separate placement offset on the stock.
-   Suggest a placement with cutter clearance, and let the user edit its X/Y
-   offset. Draw the stock boundary, placement, and origin on the canvas. The
-   first postprocessor targets GRBL with G21, G90, G17, G94, and G54.
+   the DXF coordinates intact. By default, map the lower-left of the entire
+   imported modelspace geometry's bounding box to machine XY (0, 0). Show a
+   separate, editable X/Y placement offset; machine coordinates are
+   `DXF point - DXF bounding-box minimum + placement offset`. Draw the stock
+   boundary, placement, and origin on the canvas. The first postprocessor
+   targets GRBL with G21, G90, G17, G94, and G54.
 3. **Assign operations.** Select a contour by clicking it or select a layer to
    batch assign. Provide outside and inside profiles. Each operation has a final
    depth, stepdown, feed, plunge, spindle speed, and cut direction. Offer a
    "cut through" depth from stock thickness plus a user-set allowance.
-4. **Edit paths.** Let the user click eligible corners to add or remove dogbone
-   overcuts, without changing the source DXF. Let the user place, move, and
-   remove holding tabs on outside profiles, with width and remaining height
-   controls. Suggest tab positions automatically, then permit manual edits.
-   Display the resulting cutter sweep and warn when a relief or tab does not
-   fit its local geometry or stock clearance.
+4. **Edit paths.** Give each contour independent dogbone and holding-tab
+   toggles. When dogbones are enabled, find sharp corners the cutter-side
+   offset would leave rounded: concave notches on outside profiles and convex
+   corners of inside-profile cutouts. Ignore smooth arc/polyline approximations
+   and corners with enough existing relief. Start with diagonal dogbones based
+   on the selected tool radius. Highlight proposed corners and let the user
+   suppress or restore an individual relief. Keep the source DXF unchanged.
+   When tabs are enabled, reuse fast_cabinet's long-straight-segment placement
+   idea to suggest positions for that contour. Let the user move, add, and
+   remove tabs and set width, remaining height, and count. Default tabs on for
+   outside profiles and off for inside profiles; either can be toggled. Display
+   the resulting cutter sweep and warn when a relief or tab does not fit its
+   local geometry or stock clearance.
 5. **Preview and export.** Overlay cutter-center paths, entry points, dogbones,
    tabs, travel moves, cut order, and depth passes. Give a compact job summary
    and block export on invalid geometry, impossible offsets, unsafe rapid XY
@@ -104,33 +113,35 @@ stepdowns, tabs, and bounds.
 | Milestone | Result | Done when |
 | --- | --- | --- |
 | 1. Vertical slice | Open the Keyboard plate DXF, assign its outer and inner profiles, preview, export GRBL | The outer contour is offset outward, the two inner contours inward, with correct depths and safe retracts. |
-| 2. Path edits | Add/remove dogbones and place/move/delete holding tabs | The preview and G-code agree; tool-too-large corners and invalid tab sites give clear errors. |
+| 2. Path edits | Toggle automatic dogbones and tabs per contour, then edit individual suggestions | The preview and G-code agree; smooth curves do not get false dogbones, and invalid relief or tab sites give clear errors. |
 | 3. Daily-use polish | Tool library, project save/reopen, layer selection, operation ordering | A saved job reopens with the same toolpaths and edits; changed DXF is detected. |
 | 4. Distribution | Native builds for Linux, Windows, and macOS | A clean-machine smoke test opens a DXF and exports matching G-code on each OS. |
 
 The Keyboard project's `plate_test/test_plate_2u_cut.dxf` is the first real
 fixture: millimeters (`$INSUNITS=4`), three valid closed LWPOLYLINEs on OUTER,
 SWITCH, and STABILIZER layers. The two inner contours are distinct and fully
-inside the outer contour. STABILIZER has eight sharp corners suitable for
-testing dogbone selection; OUTER and SWITCH are rounded. Keep a copy or derived
-fixture in BabyCAM's tests when implementation begins, so tests do not depend
-on another checkout.
+inside the outer contour. STABILIZER has eight sharp *concave* corners, useful
+for testing cutter-side classification: they should not receive automatic
+dogbones when STABILIZER is assigned an inside profile. OUTER and SWITCH are
+rounded. Add a small rectangular inside-cutout fixture to test dogbone
+generation, and keep copies or derived fixtures in BabyCAM's tests so they do
+not depend on another checkout.
 
 Add small DXF fixtures for arcs, bulges, circles, unitless files, and malformed
-contours. Verify generated moves against
-invariants: all XY rapids happen above the work, Z never exceeds configured
-limits, offsets stay within stock, and the final depth matches the job. Inspect
-representative `.nc` files in a simulator before calling a milestone complete.
+contours. Verify generated moves against invariants: all XY rapids happen above
+the work, Z never exceeds configured limits, cutter sweeps outside stock are
+flagged, and the final depth matches the job. Inspect representative `.nc`
+files in a simulator before calling a milestone complete.
 
-## Remaining interaction decisions
+## Interaction defaults to validate in use
 
-1. Dogbones: default to manually selecting sharp corners, with a later
-   "suggest all eligible" action. Confirm the desired relief style: diagonal
-   dogbone, T-bone, or both.
-2. Tabs: default to automatic suggestions with direct drag-to-adjust. Confirm
-   whether tabs should also be available on inside profiles.
-3. Clarify whether the suggested stock placement should be automatic by
-   default or preserve the DXF's original X/Y location until the user moves it.
+1. Automatic dogbones identify geometric candidates, not assembly intent. The
+   user can switch off a contour or an individual proposed corner.
+2. Tabs are suggested separately for each contour and remain movable. Verify
+   whether the outside-on, inside-off defaults match real jobs.
+3. The whole imported modelspace geometry determines the bounding-box origin,
+   including unselected geometry. Verify this behavior with drawings that
+   contain reference layers or annotations.
 
 ## References
 
