@@ -115,10 +115,14 @@ locations can be individually edited. The source DXF stays unchanged.
 
 ## Preview, warnings, and export
 
-The main window gives the canvas most of the space, with layers/contours on
-one side, selected-operation settings on the other, and a compact warnings
-and export summary area. The workflow should take a few selections without a
-wizard or modal dialog for each contour.
+Use PySide6 with Qt Widgets for the v1 desktop UI. Build the main window with
+`QMainWindow` and the interactive 2D canvas with `QGraphicsView`/
+`QGraphicsScene`: draw each contour as a path item and use separate items for
+selected-cut handles and overlays. The CAM model and toolpath calculations
+remain independent of Qt. Give the canvas most of the space, with
+layers/contours on one side, selected-operation settings on the other, and a
+compact warnings and export summary area. The workflow should take a few
+selections without a wizard or modal dialog for each contour.
 
 Use a top-down, live 2D editor. Refresh it after tool, operation, placement,
 start-point, tab, or dogbone edits. Show thin paths for the job, a subtle
@@ -178,10 +182,10 @@ stock, operations, tabs, reliefs, and moves. Store depths as positive distances
 below stock top; v1 outputs `Z = -depth`. A later stock-bottom output option
 can use `Z = stock_thickness - depth` without changing operation definitions.
 Proposed Python modules: `dxf_import`, `geometry`, `model`, `toolpaths`,
-`post/grbl`, `project`, and `ui`. PySide6/Qt Widgets fits the desktop UI;
-`ezdxf` handles DXF and units; Shapely can assist with validity and offsets.
-Pin dependencies and package native builds separately on Linux, Windows, and
-macOS.
+`post/grbl`, `project`, and `ui`. `ezdxf` handles DXF and units; Shapely can
+assist with validity and offsets. Pin dependencies and package native builds
+separately on Linux, Windows, and macOS. Review PySide6/Qt's LGPLv3
+distribution obligations when preparing those packages.
 
 Use `fast_cabinet/gcode.py` as a reference for `Program`, depth scheduling,
 profile offsets, tab placement, and GRBL conventions, and
