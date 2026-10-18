@@ -13,7 +13,8 @@ from typing import Callable
 import ezdxf
 from ezdxf import units
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPainterPathStroker, QPen, QTransform
+from PySide6.QtGui import (QAction, QColor, QPainter, QPainterPath, QPainterPathStroker,
+                          QPalette, QPen, QTransform)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QGroupBox,
@@ -441,8 +442,18 @@ class MainWindow(QMainWindow):
         form.addRow("Depth mode", self.depth_mode)
         self.cut_depth = ValidatedLineEdit()
         self.cut_depth.setPlaceholderText("mm below stock top")
+        depth_palette = self.cut_depth.palette()
+        depth_palette.setColor(
+            QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,
+            depth_palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Midlight))
+        depth_palette.setColor(
+            QPalette.ColorGroup.Disabled, QPalette.ColorRole.PlaceholderText,
+            depth_palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text))
+        self.cut_depth.setPalette(depth_palette)
         self.cut_depth.textChanged.connect(self._edit_operation)
-        form.addRow("To depth (mm)", self.cut_depth)
+        self.cut_depth_label = QLabel("To depth (mm)")
+        form.addRow(self.cut_depth_label, self.cut_depth)
+        self._set_cut_depth_enabled(False)
         self.direction = QComboBox()
         self.direction.addItems(["Climb", "Conventional"])
         self.direction.currentIndexChanged.connect(self._edit_operation)
@@ -785,7 +796,7 @@ class MainWindow(QMainWindow):
             except CAMError:
                 pass
         self.dogbone_list.blockSignals(False)
-        self.cut_depth.setEnabled(bool(operation and operation.depth_mode == "depth"))
+        self._set_cut_depth_enabled(bool(operation and operation.depth_mode == "depth"))
         for widget in (self.cut_tabs, self.cut_dogbones, self.cut_tab_min, self.cut_tab_max,
                        self.cut_tab_width, self.cut_tab_rise):
             widget.setEnabled(operation is not None)
@@ -824,12 +835,16 @@ class MainWindow(QMainWindow):
             self._operation_selected()
             self._set_message(str(exc), error=True)
             return
-        self.cut_depth.setEnabled(operation.depth_mode == "depth")
+        self._set_cut_depth_enabled(operation.depth_mode == "depth")
         self._update_operation_list()
         if editing_depth:
             self._refresh()  # Keep partially typed values in the depth field.
         else:
             self._operation_selected()
+
+    def _set_cut_depth_enabled(self, enabled: bool) -> None:
+        self.cut_depth.setEnabled(enabled)
+        self.cut_depth_label.setEnabled(enabled)
 
     def _toggle_dogbone_candidate(self, item: QListWidgetItem) -> None:
         if self._refreshing:

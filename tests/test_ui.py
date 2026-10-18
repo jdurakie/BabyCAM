@@ -12,7 +12,7 @@ from ezdxf import units
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer  # noqa: E402
-from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen  # noqa: E402
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPalette, QPen  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QDialog, QFileDialog, QGraphicsScene, QMessageBox, QPlainTextEdit, QPushButton,
@@ -80,6 +80,12 @@ class UIWorkflowTests(unittest.TestCase):
         window.contours.setCurrentRow(0)
         window._assign("outside")
         self.assertTrue(window.depth_mode.property("invalid"))
+        self.assertFalse(window.cut_depth.isEnabled())
+        self.assertFalse(window.cut_depth_label.isEnabled())
+        palette = window.cut_depth.palette()
+        self.assertNotEqual(
+            palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base),
+            palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Base))
         window.tabs.setCurrentIndex(2)
         window.show()
         APPLICATION.processEvents()
@@ -92,12 +98,16 @@ class UIWorkflowTests(unittest.TestCase):
         window.depth_mode.setCurrentIndex(1)
         APPLICATION.processEvents()
         self.assertEqual([control.geometry() for control in controls], positions)
+        self.assertFalse(window.cut_depth.isEnabled())
+        self.assertFalse(window.cut_depth_label.isEnabled())
         window.depth_mode.setCurrentIndex(0)
         APPLICATION.processEvents()
         self.assertEqual([control.geometry() for control in controls], positions)
         window.depth_mode.setCurrentIndex(2)
         APPLICATION.processEvents()
         self.assertEqual([control.geometry() for control in controls], positions)
+        self.assertTrue(window.cut_depth.isEnabled())
+        self.assertTrue(window.cut_depth_label.isEnabled())
         self.assertFalse(window.depth_mode.property("invalid"))
         self.assertTrue(window.cut_depth.property("invalid"))
         sweep = next(item for item in window.scene.items() if item.data(2) == "cutter-sweep")
