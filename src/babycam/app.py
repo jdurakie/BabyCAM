@@ -1160,7 +1160,7 @@ class MainWindow(QMainWindow):
                 marker.setZValue(5)
                 if planned.tabs:
                     segments = split_for_tabs(planned.points, planned.tabs, planned.tab_width)
-                    tab_pen = QPen(QColor("#f5c46b"), 4)
+                    tab_pen = QPen(QColor("#c48cff"), 4)
                     tab_pen.setCosmetic(True)
                     for (a, is_tab), (b, _) in zip(segments, segments[1:]):
                         if is_tab:
