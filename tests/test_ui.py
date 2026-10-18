@@ -83,6 +83,8 @@ class UIWorkflowTests(unittest.TestCase):
         window.tabs.setCurrentIndex(2)
         window.show()
         APPLICATION.processEvents()
+        self.assertLessEqual(
+            window.depth_mode.geometry().top() - window.cut_label.geometry().bottom(), 12)
         controls = (window.tabs, window.export_button, window.export_info,
                     window.cut_label, window.depth_mode,
                     window.cut_depth, window.direction, window.cut_tabs, window.cut_tab_rise)
@@ -210,7 +212,11 @@ class UIWorkflowTests(unittest.TestCase):
                          pos=window.canvas.mapFromScene(point))
         APPLICATION.processEvents()
         self.assertEqual(window._current_operation().contour_id, inner_id)
-        self.assertEqual(window.cut_label.text(), inner_id)
+        inner_contour = next(contour for contour in window.job.drawing.contours
+                             if contour.id == inner_id)
+        inner_number = window.job.drawing.contours.index(inner_contour) + 1
+        self.assertEqual(window.cut_label.text(),
+                         f"Inside · {inner_contour.layer} (contour {inner_number})")
 
         point = centerline_point(outer_id)
         QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.LeftButton,

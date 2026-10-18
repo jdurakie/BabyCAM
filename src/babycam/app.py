@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QSpinBox, QTabWidget,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QSpinBox, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -433,7 +433,8 @@ class MainWindow(QMainWindow):
         box = QGroupBox("Selected cut")
         form = QFormLayout(box)
         self.cut_label = QLabel("No cut selected")
-        form.addRow(self.cut_label)
+        self.cut_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        form.addRow("Contour", self.cut_label)
         self.depth_mode = ValidatedComboBox()
         self.depth_mode.addItems(["Depth not selected", "Through", "To depth"])
         self.depth_mode.currentIndexChanged.connect(self._edit_operation)
@@ -738,7 +739,17 @@ class MainWindow(QMainWindow):
     def _operation_selected(self) -> None:
         operation = self._current_operation()
         self._refreshing = True
-        self.cut_label.setText(operation.contour_id if operation else "No cut selected")
+        if operation and self.job.drawing:
+            match = next(((index, item) for index, item in enumerate(self.job.drawing.contours, 1)
+                          if item.id == operation.contour_id), None)
+            if match:
+                contour_number, contour = match
+                self.cut_label.setText(
+                    f"{operation.side.title()} · {contour.layer} (contour {contour_number})")
+            else:
+                self.cut_label.setText(operation.side.title())
+        else:
+            self.cut_label.setText("No cut selected")
         self.depth_mode.setCurrentIndex(
             1 if operation and operation.depth_mode == "through" else
             2 if operation and operation.depth_mode == "depth" else 0)
