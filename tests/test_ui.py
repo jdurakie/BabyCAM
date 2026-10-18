@@ -11,10 +11,12 @@ from ezdxf import units
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QGraphicsScene, QMessageBox, QPushButton  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication, QDialog, QGraphicsScene, QMessageBox, QPlainTextEdit, QPushButton,
+)
 
 from babycam.app import ContourItem, MainWindow  # noqa: E402
 
@@ -81,8 +83,8 @@ class UIWorkflowTests(unittest.TestCase):
         window.tabs.setCurrentIndex(2)
         window.show()
         APPLICATION.processEvents()
-        controls = (window.cut_label, window.depth_mode, window.cut_depth, window.direction,
-                    window.cut_tabs, window.cut_tab_rise)
+        controls = (window.tabs, window.message_panel, window.cut_label, window.depth_mode,
+                    window.cut_depth, window.direction, window.cut_tabs, window.cut_tab_rise)
         positions = [control.geometry() for control in controls]
         window.depth_mode.setCurrentIndex(1)
         APPLICATION.processEvents()
@@ -269,10 +271,24 @@ class UIWorkflowTests(unittest.TestCase):
         sweep = next(item for item in window.scene.items() if item.data(2) == "cutter-sweep")
         self.assertAlmostEqual(marker.rect().width(), 2)
         self.assertAlmostEqual(sweep.pen().widthF(), 2)
-        summary_lines = window.message.text().splitlines()
+        summary_lines = window._status_text.splitlines()
         self.assertTrue(summary_lines[0].startswith("Ready | Bounds (mm):"))
+        self.assertEqual(window.message.text(), summary_lines[0])
         self.assertTrue(any(line.startswith("DXF notice:") for line in summary_lines[1:]))
         self.assertEqual(sum(line.startswith("Warning:") for line in summary_lines), 2)
+        self.assertEqual(window.status_counts.text(), "1 DXF notice, 2 warnings")
+        self.assertEqual(window.message_panel.height(), 38)
+        observed = []
+
+        def inspect_details():
+            dialog = APPLICATION.activeModalWidget()
+            if isinstance(dialog, QDialog):
+                observed.append(dialog.findChild(QPlainTextEdit).toPlainText())
+                dialog.accept()
+
+        QTimer.singleShot(0, inspect_details)
+        window.status_details_button.click()
+        self.assertEqual(observed, [window._status_text])
         window.close()
         window.deleteLater()
         APPLICATION.processEvents()

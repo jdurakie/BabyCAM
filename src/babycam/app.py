@@ -14,10 +14,11 @@ from ezdxf import units
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPainterPathStroker, QPen, QTransform
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGraphicsItem, QGraphicsPathItem,
-    QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-    QPushButton, QSplitter, QSpinBox, QStyle, QTabWidget, QVBoxLayout, QWidget, QInputDialog,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+    QFrame, QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QGroupBox,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QSpinBox,
+    QStyle, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .cam import (CAMError, dogbone_centers, grbl_gcode, number, plan_program, planned_path,
@@ -171,14 +172,21 @@ class MainWindow(QMainWindow):
         self.message_panel = QFrame()
         self.message_panel.setFrameShape(QFrame.Shape.StyledPanel)
         message_layout = QHBoxLayout(self.message_panel)
-        message_layout.setContentsMargins(8, 5, 8, 5)
+        message_layout.setContentsMargins(8, 4, 8, 4)
         self.message_icon = QLabel()
         message_layout.addWidget(self.message_icon)
         self.message = QLabel()
         self.message.setTextFormat(Qt.TextFormat.PlainText)
-        self.message.setWordWrap(True)
-        self.message_panel.setMinimumHeight(42)
+        self.message.setWordWrap(False)
+        self.message.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         message_layout.addWidget(self.message, 1)
+        self.status_counts = QLabel()
+        message_layout.addWidget(self.status_counts)
+        self.status_details_button = QPushButton("Details…")
+        self.status_details_button.clicked.connect(self._show_status_details)
+        message_layout.addWidget(self.status_details_button)
+        self.message_panel.setFixedHeight(max(38, self.status_details_button.sizeHint().height() + 10))
+        self._status_text = ""
         root = QWidget()
         layout = QVBoxLayout(root)
         layout.addWidget(splitter, 1)
@@ -203,14 +211,40 @@ class MainWindow(QMainWindow):
             self._set_message(self.library_error, error=True)
 
     def _set_message(self, text: str, *, error: bool = False) -> None:
-        self.message.setText(f"Error: {text}" if error else text)
+        self._status_text = f"Error: {text}" if error else text
+        lines = self._status_text.splitlines()
+        self.message.setText(lines[0] if lines else "")
+        self.message.setToolTip(self._status_text)
         font = self.message.font()
         font.setBold(error)
         self.message.setFont(font)
-        self.message_icon.setVisible(error)
-        if error:
+        notices = sum(line.startswith("DXF notice:") for line in lines)
+        warnings = sum(line.startswith("Warning:") for line in lines)
+        counts = []
+        if notices:
+            counts.append(f"{notices} DXF notice{'s' if notices != 1 else ''}")
+        if warnings:
+            counts.append(f"{warnings} warning{'s' if warnings != 1 else ''}")
+        self.status_counts.setText(", ".join(counts))
+        self.status_counts.setVisible(bool(counts))
+        self.message_icon.setVisible(error or bool(warnings))
+        if error or warnings:
             icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
             self.message_icon.setPixmap(icon.pixmap(20, 20))
+
+    def _show_status_details(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Job status")
+        dialog.resize(620, 280)
+        layout = QVBoxLayout(dialog)
+        details = QPlainTextEdit()
+        details.setReadOnly(True)
+        details.setPlainText(self._status_text)
+        layout.addWidget(details)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     @staticmethod
     def _mark_invalid(widget: QWidget, invalid: bool) -> None:
@@ -905,11 +939,7 @@ class MainWindow(QMainWindow):
                 ordered = sorted(drawing.warnings,
                                  key=lambda text: not any(word in text.lower() for word in
                                                           ("unsupported", "invalid", "skipped")))
-                label = "DXF notice" if len(ordered) == 1 else f"DXF notices ({len(ordered)})"
-                lines.append(f"{label}: {ordered[0]}")
-                self.message.setToolTip("\n".join(ordered))
-            else:
-                self.message.setToolTip("")
+                lines.extend(f"DXF notice: {notice}" for notice in ordered)
             lines.extend(f"Warning: {warning}" for warning in program.warnings)
             self._set_message("\n".join(lines))
         except CAMError as exc:
@@ -937,7 +967,7 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, "Could not export", str(exc))
             return
-        self.statusBar().showMessage(f"Exported {destination}", 10000)
+        self._set_message(f"Exported {destination}")
 
 
 def main() -> int:
