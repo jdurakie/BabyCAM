@@ -59,6 +59,15 @@ def _positive_integer_field(field: QLineEdit) -> bool:
         return False
 
 
+def _cut_preview_color(operation: Operation) -> str:
+    if operation.depth_mode == "through":
+        return "#6bbce8"
+    if (operation.depth_mode == "depth" and operation.depth is not None
+            and math.isfinite(operation.depth) and operation.depth > 0):
+        return "#6798dc"
+    return "#e47d8f"
+
+
 def _centerline_hit_shape(path: QPainterPath) -> QPainterPath:
     stroker = QPainterPathStroker()
     stroker.setWidth(0.5)  # Drawing coordinates are millimeters.
@@ -916,7 +925,7 @@ class MainWindow(QMainWindow):
             for planned in paths:
                 graphic = _path(planned.points)
                 selected = selected_op and planned.operation.contour_id == selected_op.contour_id
-                color = "#e47d8f" if planned.operation.depth_mode == "through" else "#6bbce8"
+                color = _cut_preview_color(planned.operation)
                 diameter = self.job.tool.diameter
                 if diameter:
                     sweep_color = QColor(color)
