@@ -471,6 +471,7 @@ class MainWindow(QMainWindow):
         row.addWidget(outside)
         layout.addLayout(row)
         box = QGroupBox("Selected cut")
+        self.selected_cut_box = box
         form = QFormLayout(box)
         self.cut_label = QLabel("No cut selected")
         self.cut_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -537,6 +538,7 @@ class MainWindow(QMainWindow):
         remove = QPushButton("Remove selected cut")
         remove.clicked.connect(self._remove_operation)
         form.addRow(remove)
+        box.setEnabled(False)
         layout.addWidget(box)
         layout.addStretch()
         self.tabs.addTab(page, "Cuts")
@@ -710,6 +712,7 @@ class MainWindow(QMainWindow):
                 item.setData(Qt.ItemDataRole.UserRole, contour.id)
                 self.contours.addItem(item)
             self._update_operation_list()
+            self._operation_selected()
             self._refresh(fit=True)
             self.setWindowTitle(f"BabyCAM — {Path(path).name}")
         except (OSError, ValueError, ezdxf.DXFError) as exc:
@@ -828,6 +831,7 @@ class MainWindow(QMainWindow):
     def _operation_selected(self) -> None:
         operation = self._current_operation()
         self._refreshing = True
+        self.selected_cut_box.setEnabled(operation is not None)
         if operation and self.job.drawing:
             match = next(((index, item) for index, item in enumerate(self.job.drawing.contours, 1)
                           if item.id == operation.contour_id), None)

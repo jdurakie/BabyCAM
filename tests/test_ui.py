@@ -28,6 +28,29 @@ APPLICATION = QApplication.instance() or QApplication([])
 
 
 class UIWorkflowTests(unittest.TestCase):
+    def test_selected_cut_panel_follows_cut_selection(self):
+        window = MainWindow()
+        self.assertFalse(window.selected_cut_box.isEnabled())
+        window.open_dxf(str(FIXTURE))
+        for field, value in ((window.thickness, "6"), (window.tool_name, "flat"),
+                             (window.diameter, "1")):
+            field.setText(value)
+        window.can_plunge.setChecked(True)
+        window.contours.setCurrentRow(0)
+        window._assign("outside")
+        self.assertTrue(window.selected_cut_box.isEnabled())
+        self.assertTrue(window.depth_mode.isEnabled())
+        window.operations.setCurrentRow(-1)
+        self.assertFalse(window.selected_cut_box.isEnabled())
+        self.assertFalse(window.depth_mode.isEnabled())
+        window.operations.setCurrentRow(0)
+        self.assertTrue(window.selected_cut_box.isEnabled())
+        window.open_dxf(str(FIXTURE))
+        self.assertFalse(window.selected_cut_box.isEnabled())
+        window.close()
+        window.deleteLater()
+        APPLICATION.processEvents()
+
     def test_selected_contour_has_no_inset_dotted_box(self):
         scene = QGraphicsScene()
         path = QPainterPath()
