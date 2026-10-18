@@ -75,6 +75,35 @@ class ContourItem(QGraphicsPathItem):
         painter.drawPath(self.path())
 
 
+def _paint_invalid_outline(widget: QWidget) -> None:
+    # Keep the native widget style and size hint unchanged during validation.
+    if not widget.property("invalid"):
+        return
+    painter = QPainter(widget)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor("#c94343"), 2))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(widget.rect().adjusted(1, 1, -2, -2), 3, 3)
+
+
+class ValidatedLineEdit(QLineEdit):
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        _paint_invalid_outline(self)
+
+
+class ValidatedComboBox(QComboBox):
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        _paint_invalid_outline(self)
+
+
+class ValidatedSpinBox(QSpinBox):
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        _paint_invalid_outline(self)
+
+
 class Canvas(QGraphicsView):
     def __init__(self, scene: QGraphicsScene, parent: QWidget | None = None):
         super().__init__(scene, parent)
@@ -188,8 +217,7 @@ class MainWindow(QMainWindow):
         if widget.property("invalid") == invalid:
             return
         widget.setProperty("invalid", invalid)
-        kind = "QComboBox" if isinstance(widget, QComboBox) else "QSpinBox" if isinstance(widget, QSpinBox) else "QLineEdit"
-        widget.setStyleSheet(f"{kind} {{ border: 2px solid #c94343; border-radius: 3px; }}" if invalid else "")
+        widget.update()
 
     def _update_field_highlights(self) -> None:
         for field in (self.thickness, self.safe_z, self.diameter, self.feed,
@@ -223,7 +251,7 @@ class MainWindow(QMainWindow):
             self._mark_invalid(self.cut_tab_rise, False)
 
     def _field(self, form: QFormLayout, label: str, initial: str = "", hint: str = "") -> QLineEdit:
-        field = QLineEdit(initial)
+        field = ValidatedLineEdit(initial)
         field.setPlaceholderText(hint)
         field.textChanged.connect(self._read_fields)
         form.addRow(label, field)
@@ -250,10 +278,10 @@ class MainWindow(QMainWindow):
         for box in (self.default_tabs, self.default_dogbones):
             box.toggled.connect(self._read_fields)
             edit_form.addRow(box)
-        self.tab_min = QSpinBox()
+        self.tab_min = ValidatedSpinBox()
         self.tab_min.setRange(1, 99)
         self.tab_min.setValue(2)
-        self.tab_max = QSpinBox()
+        self.tab_max = ValidatedSpinBox()
         self.tab_max.setRange(1, 99)
         self.tab_max.setValue(4)
         for label, spin in (("Minimum tabs", self.tab_min), ("Maximum tabs", self.tab_max)):
@@ -317,11 +345,11 @@ class MainWindow(QMainWindow):
         form = QFormLayout(box)
         self.cut_label = QLabel("No cut selected")
         form.addRow(self.cut_label)
-        self.depth_mode = QComboBox()
+        self.depth_mode = ValidatedComboBox()
         self.depth_mode.addItems(["Depth not selected", "Through", "To depth"])
         self.depth_mode.currentIndexChanged.connect(self._edit_operation)
         form.addRow("Depth mode", self.depth_mode)
-        self.cut_depth = QLineEdit()
+        self.cut_depth = ValidatedLineEdit()
         self.cut_depth.setPlaceholderText("mm below stock top")
         self.cut_depth.textChanged.connect(self._edit_operation)
         form.addRow("To depth (mm)", self.cut_depth)
@@ -341,11 +369,11 @@ class MainWindow(QMainWindow):
         for label, spin in (("Minimum tabs", self.cut_tab_min), ("Maximum tabs", self.cut_tab_max)):
             spin.valueChanged.connect(self._edit_operation)
             form.addRow(label, spin)
-        self.cut_tab_width = QLineEdit()
+        self.cut_tab_width = ValidatedLineEdit()
         self.cut_tab_width.setPlaceholderText("mm")
         self.cut_tab_width.editingFinished.connect(self._edit_operation)
         form.addRow("Tab width (mm)", self.cut_tab_width)
-        self.cut_tab_rise = QLineEdit()
+        self.cut_tab_rise = ValidatedLineEdit()
         self.cut_tab_rise.editingFinished.connect(self._edit_operation)
         form.addRow("Tab rise (%)", self.cut_tab_rise)
         self.dogbone_list = QListWidget()
