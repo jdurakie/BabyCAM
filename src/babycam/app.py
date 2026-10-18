@@ -67,6 +67,13 @@ class ContourItem(QGraphicsPathItem):
         stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         return stroker.createStroke(self.path())
 
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        # Qt's default selected-item box uses the cosmetic pen width as scene
+        # units, which puts the dotted box well inside a zoomed contour.
+        painter.setPen(self.pen())
+        painter.setBrush(self.brush())
+        painter.drawPath(self.path())
+
 
 class Canvas(QGraphicsView):
     def __init__(self, scene: QGraphicsScene, parent: QWidget | None = None):

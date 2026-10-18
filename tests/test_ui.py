@@ -11,11 +11,12 @@ from ezdxf import units
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPointF, Qt  # noqa: E402
+from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QGraphicsScene, QMessageBox, QPushButton  # noqa: E402
 
-from babycam.app import MainWindow  # noqa: E402
+from babycam.app import ContourItem, MainWindow  # noqa: E402
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "keyboard_plate.dxf"
@@ -23,6 +24,29 @@ APPLICATION = QApplication.instance() or QApplication([])
 
 
 class UIWorkflowTests(unittest.TestCase):
+    def test_selected_contour_has_no_inset_dotted_box(self):
+        scene = QGraphicsScene()
+        path = QPainterPath()
+        path.addRect(0, 0, 20, 20)
+        item = ContourItem(path)
+        pen = QPen(QColor("#ffe27a"), 3.5)
+        pen.setCosmetic(True)
+        item.setPen(pen)
+        item.setFlag(item.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(item)
+
+        def render() -> QImage:
+            image = QImage(200, 200, QImage.Format.Format_RGB32)
+            image.fill(QColor("#181d24"))
+            painter = QPainter(image)
+            scene.render(painter, QRectF(0, 0, 200, 200), QRectF(-2, -2, 24, 24))
+            painter.end()
+            return image
+
+        unselected = render()
+        item.setSelected(True)
+        self.assertEqual(render(), unselected)
+
     def test_required_fields_turn_red_until_valid(self):
         window = MainWindow()
         for field in (window.thickness, window.safe_z, window.tool_name, window.diameter,
