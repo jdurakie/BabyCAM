@@ -116,6 +116,7 @@ class MainWindow(QMainWindow):
         self.message_icon = QLabel()
         message_layout.addWidget(self.message_icon)
         self.message = QLabel()
+        self.message.setTextFormat(Qt.TextFormat.PlainText)
         self.message.setWordWrap(True)
         self.message_panel.setMinimumHeight(42)
         message_layout.addWidget(self.message, 1)
@@ -785,18 +786,21 @@ class MainWindow(QMainWindow):
             travel_pen.setCosmetic(True)
             self.scene.addPath(travel, travel_pen).setZValue(3)
             x0, x1, y0, y1, z0, z1 = program.bounds
-            summary = f"Ready · X {number(x0)}…{number(x1)} · Y {number(y0)}…{number(y1)} · Z {number(z0)}…{number(z1)} mm"
+            lines = [
+                f"Ready | Bounds (mm): X {number(x0)} to {number(x1)}, "
+                f"Y {number(y0)} to {number(y1)}, Z {number(z0)} to {number(z1)}"
+            ]
             if drawing and drawing.warnings:
                 ordered = sorted(drawing.warnings,
                                  key=lambda text: not any(word in text.lower() for word in
                                                           ("unsupported", "invalid", "skipped")))
-                summary += f" · {len(ordered)} DXF notice(s): " + ordered[0]
+                label = "DXF notice" if len(ordered) == 1 else f"DXF notices ({len(ordered)})"
+                lines.append(f"{label}: {ordered[0]}")
                 self.message.setToolTip("\n".join(ordered))
             else:
                 self.message.setToolTip("")
-            if program.warnings:
-                summary += " · " + " ".join(program.warnings)
-            self._set_message(summary)
+            lines.extend(f"Warning: {warning}" for warning in program.warnings)
+            self._set_message("\n".join(lines))
         except CAMError as exc:
             self.export_action.setEnabled(False)
             issue = errors[0] if errors else str(exc)
