@@ -39,7 +39,7 @@ def _minimal_dxf(path: Path) -> tuple[ezdxf.document.Drawing, list[str]]:
 
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
-    warnings = ["Imported a minimal DXF with missing entity subclass records."]
+    warnings: list[str] = []
     section = ""
     current_type: str | None = None
     fields: list[tuple[int, str]] = []
@@ -223,9 +223,6 @@ def load_dxf(file_path: str | Path, unit_override: int | None = None) -> Drawing
     joined, open_paths = _join_segments(segments)
     contours += joined
     references += open_paths
-    for item in joined:
-        if "+" in item.id:
-            warnings.append(f"Joined DXF segments into closed contour {item.id}.")
     for item in contours:
         if item.error:
             warnings.append(f"{item.layer} contour {item.id}: {item.error}.")

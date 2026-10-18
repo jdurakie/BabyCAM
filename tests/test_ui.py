@@ -15,7 +15,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
-    QApplication, QDialog, QGraphicsScene, QMessageBox, QPlainTextEdit, QPushButton,
+    QApplication, QDialog, QFileDialog, QGraphicsScene, QMessageBox, QPlainTextEdit, QPushButton,
 )
 
 from babycam.app import ContourItem, MainWindow  # noqa: E402
@@ -83,7 +83,8 @@ class UIWorkflowTests(unittest.TestCase):
         window.tabs.setCurrentIndex(2)
         window.show()
         APPLICATION.processEvents()
-        controls = (window.tabs, window.message_panel, window.cut_label, window.depth_mode,
+        controls = (window.tabs, window.export_button, window.export_info,
+                    window.cut_label, window.depth_mode,
                     window.cut_depth, window.direction, window.cut_tabs, window.cut_tab_rise)
         positions = [control.geometry() for control in controls]
         window.depth_mode.setCurrentIndex(1)
@@ -129,9 +130,9 @@ class UIWorkflowTests(unittest.TestCase):
     def test_selection_and_errors_are_visible(self):
         window = MainWindow()
         window._assign("inside")
-        self.assertTrue(window.message.font().bold())
-        self.assertTrue(window.message.text().startswith("Error:"))
-        self.assertFalse(window.message_icon.isHidden())
+        self.assertTrue(window.export_info.text().startswith("Error:"))
+        self.assertTrue(window.export_details_button.isEnabled())
+        self.assertEqual(window.export_button.property("exportState"), "idle")
         window.open_dxf(str(FIXTURE))
         contour_id = window.contours.item(0).data(Qt.ItemDataRole.UserRole)
         path_item = next(item for item in window.scene.items() if item.data(0) == contour_id)
@@ -244,6 +245,9 @@ class UIWorkflowTests(unittest.TestCase):
 
     def test_explicit_depth_unlocks_export(self):
         window = MainWindow()
+        self.assertEqual(window.export_button.text(), "Export GCode")
+        self.assertEqual(window.export_button.property("exportState"), "idle")
+        self.assertFalse(window.export_button.isEnabled())
         window.open_dxf(str(FIXTURE))
         self.assertEqual(window.contours.count(), 3)
         for field, value in (
@@ -257,9 +261,15 @@ class UIWorkflowTests(unittest.TestCase):
         window.contours.setCurrentRow(0)
         window._assign("outside")
         self.assertEqual(window.operations.count(), 1)
-        self.assertFalse(window.export_action.isEnabled())
+        self.assertEqual(window.export_button.property("exportState"), "blocked")
+        self.assertTrue(window.export_button.isEnabled())
+        self.assertIn("Cannot export:", window.export_info.text())
+        with patch.object(QMessageBox, "warning") as show_error:
+            window.export_button.click()
+            show_error.assert_called_once()
         self.assertIn("Depth not selected", window.operations.item(0).text())
         window.depth_mode.setCurrentIndex(1)
+        self.assertEqual(window.export_button.property("exportState"), "warnings")
         self.assertTrue(window.export_action.isEnabled())
         marker = next(item for item in window.scene.items() if item.data(2) == "start-marker")
         sweep = next(item for item in window.scene.items() if item.data(2) == "cutter-sweep")
@@ -271,13 +281,8 @@ class UIWorkflowTests(unittest.TestCase):
         sweep = next(item for item in window.scene.items() if item.data(2) == "cutter-sweep")
         self.assertAlmostEqual(marker.rect().width(), 2)
         self.assertAlmostEqual(sweep.pen().widthF(), 2)
-        summary_lines = window._status_text.splitlines()
-        self.assertTrue(summary_lines[0].startswith("Ready | Bounds (mm):"))
-        self.assertEqual(window.message.text(), summary_lines[0])
-        self.assertTrue(any(line.startswith("DXF notice:") for line in summary_lines[1:]))
-        self.assertEqual(sum(line.startswith("Warning:") for line in summary_lines), 2)
-        self.assertEqual(window.status_counts.text(), "1 DXF notice, 2 warnings")
-        self.assertEqual(window.message_panel.height(), 38)
+        self.assertEqual(window.export_info.text(), "2 warnings. Export is available.")
+        self.assertTrue(window.export_details_button.isEnabled())
         observed = []
 
         def inspect_details():
@@ -287,8 +292,22 @@ class UIWorkflowTests(unittest.TestCase):
                 dialog.accept()
 
         QTimer.singleShot(0, inspect_details)
-        window.status_details_button.click()
-        self.assertEqual(observed, [window._status_text])
+        window.export_details_button.click()
+        self.assertEqual(len(observed), 1)
+        self.assertIn("Warning: Usable cutting length", observed[0])
+        self.assertIn("Warning: Cutter path extends into negative XY", observed[0])
+        self.assertNotIn("Bounds", observed[0])
+        self.assertNotIn("subclass records", observed[0])
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "profile.nc"
+            with patch.object(QFileDialog, "getSaveFileName", return_value=(str(destination), "")):
+                window.export_button.click()
+            self.assertIn("(BabyCAM profile job)", destination.read_text(encoding="utf-8"))
+        window.cutting_length.setText("10")
+        window.offset_x.setText("1")
+        window.offset_y.setText("1")
+        self.assertEqual(window.export_button.property("exportState"), "ready")
+        self.assertEqual(window.export_info.text(), "Ready to export.")
         window.close()
         window.deleteLater()
         APPLICATION.processEvents()

@@ -216,20 +216,25 @@ def plan_program(job: Job) -> Program:
 
     warnings: list[str] = []
     if tool.cutting_length is None:
-        warnings.append("Usable cutting length is not set; maximum cut depth was not checked.")
+        warnings.append("Usable cutting length is not set; enter it under Endmill to check "
+                        "whether this cut is within the tool's reach.")
     min_x = min(x for path in paths for x, _ in path.points)
     max_x = max(x for path in paths for x, _ in path.points)
     min_y = min(y for path in paths for _, y in path.points)
     max_y = max(y for path in paths for _, y in path.points)
     if min_x < -1e-8 or min_y < -1e-8:
-        warnings.append("Cutter path extends into negative XY.")
+        warnings.append("Cutter path extends into negative XY; check the DXF offset or "
+                        "work origin before export.")
     if job.setup.stock_width is not None and max_x > job.setup.stock_width + 1e-8:
-        warnings.append("Cutter path extends past the entered stock width.")
+        warnings.append("Cutter path extends past the entered stock width; check stock "
+                        "size or DXF placement.")
     if job.setup.stock_height is not None and max_y > job.setup.stock_height + 1e-8:
-        warnings.append("Cutter path extends past the entered stock height.")
+        warnings.append("Cutter path extends past the entered stock height; check stock "
+                        "size or DXF placement.")
     if any(path.target_depth > thickness + 1e-8 and path.operation.depth_mode != "through"
            for path in paths):
-        warnings.append("A To depth cut extends below measured stock thickness.")
+        warnings.append("A To depth cut extends below measured stock thickness; check "
+                        "cut depth and stock thickness.")
 
     moves: list[Move] = [Move("G0", z=safe_z)]
     for path in paths:

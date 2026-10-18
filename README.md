@@ -38,8 +38,11 @@ Or install the project into a Python 3.11+ virtual environment and run
 6. Select one or more closed contours and assign an inside or outside cut.
    Select each cut and explicitly choose **Through** or **To depth**.
 7. Inspect the cutter-center lines and cutter-width sweep, tabs, and dogbones,
-   then export a GRBL `.nc` file. The solid start circle matches the endmill
-   diameter.
+   then use **Export GCode** below the cuts list to save a GRBL `.nc` file.
+   Grey means no cuts are assigned, red means a required setting blocks export,
+   yellow means export is available with warnings, and green means ready.
+   **Export details…** explains blockers and warnings. The solid start circle
+   matches the endmill diameter.
 
 Dogbones are proposed only at sharp corners on the cutter side of a profile.
 Rounded contours and corners on the opposite side show a count of zero.

@@ -15,10 +15,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPainterPathStroker, QPen, QTransform
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QFrame, QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QGroupBox,
+    QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QSpinBox,
-    QStyle, QTabWidget, QVBoxLayout, QWidget,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QSpinBox, QTabWidget,
+    QVBoxLayout, QWidget,
 )
 
 from .cam import (CAMError, dogbone_centers, grbl_gcode, number, plan_program, planned_path,
@@ -156,6 +156,21 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.contours, 3)
         left_layout.addWidget(QLabel("Cuts (inside first on export)"))
         left_layout.addWidget(self.operations, 2)
+        self.export_button = QPushButton("Export GCode")
+        self.export_button.setFixedHeight(52)
+        self.export_button.clicked.connect(self._export)
+        left_layout.addWidget(self.export_button)
+        self.export_info = QLabel()
+        self.export_info.setWordWrap(True)
+        self.export_info.setFixedHeight(50)
+        self.export_info.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        left_layout.addWidget(self.export_info)
+        self.export_details_button = QPushButton("Export details…")
+        self.export_details_button.clicked.connect(self._show_export_details)
+        left_layout.addWidget(self.export_details_button)
+        self._export_issue = ""
+        self._export_warnings: list[str] = []
+        self._last_message = ""
 
         self.tabs = QTabWidget()
         self._setup_tab()
@@ -169,82 +184,86 @@ class MainWindow(QMainWindow):
         splitter.setSizes([235, 760, 305])
         splitter.setStretchFactor(1, 1)
 
-        self.message_panel = QFrame()
-        self.message_panel.setFrameShape(QFrame.Shape.StyledPanel)
-        message_layout = QHBoxLayout(self.message_panel)
-        message_layout.setContentsMargins(8, 4, 8, 4)
-        self.message_icon = QLabel()
-        message_layout.addWidget(self.message_icon)
-        self.message = QLabel()
-        self.message.setTextFormat(Qt.TextFormat.PlainText)
-        self.message.setWordWrap(False)
-        self.message.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        message_layout.addWidget(self.message, 1)
-        self.status_counts = QLabel()
-        message_layout.addWidget(self.status_counts)
-        self.status_details_button = QPushButton("Details…")
-        self.status_details_button.clicked.connect(self._show_status_details)
-        message_layout.addWidget(self.status_details_button)
-        self.message_panel.setFixedHeight(max(38, self.status_details_button.sizeHint().height() + 10))
-        self._status_text = ""
         root = QWidget()
         layout = QVBoxLayout(root)
         layout.addWidget(splitter, 1)
-        layout.addWidget(self.message_panel)
         self.setCentralWidget(root)
 
         open_action = QAction("Open DXF…", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._open_dialog)
-        export_action = QAction("Export GRBL…", self)
+        export_action = QAction("Export GCode", self)
         export_action.setShortcut("Ctrl+E")
         export_action.triggered.connect(self._export)
         self.export_action = export_action
+        self.addAction(export_action)
         menu = self.menuBar().addMenu("File")
         menu.addAction(open_action)
-        menu.addAction(export_action)
         toolbar = self.addToolBar("Main")
         toolbar.addAction(open_action)
-        toolbar.addAction(export_action)
         self._refresh()
         if self.library_error:
             self._set_message(self.library_error, error=True)
 
     def _set_message(self, text: str, *, error: bool = False) -> None:
-        self._status_text = f"Error: {text}" if error else text
-        lines = self._status_text.splitlines()
-        self.message.setText(lines[0] if lines else "")
-        self.message.setToolTip(self._status_text)
-        font = self.message.font()
-        font.setBold(error)
-        self.message.setFont(font)
-        notices = sum(line.startswith("DXF notice:") for line in lines)
-        warnings = sum(line.startswith("Warning:") for line in lines)
-        counts = []
-        if notices:
-            counts.append(f"{notices} DXF notice{'s' if notices != 1 else ''}")
-        if warnings:
-            counts.append(f"{warnings} warning{'s' if warnings != 1 else ''}")
-        self.status_counts.setText(", ".join(counts))
-        self.status_counts.setVisible(bool(counts))
-        self.message_icon.setVisible(error or bool(warnings))
-        if error or warnings:
-            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
-            self.message_icon.setPixmap(icon.pixmap(20, 20))
+        self._last_message = f"Error: {text}" if error else text
+        self.export_info.setText(self._last_message)
+        self.export_info.setToolTip(self._last_message)
+        self.export_details_button.setEnabled(True)
 
-    def _show_status_details(self) -> None:
+    def _show_export_details(self) -> None:
+        lines = []
+        if self._last_message:
+            lines.append(self._last_message)
+        if self._export_issue and self._export_issue not in lines:
+            lines.append(f"Cannot export: {self._export_issue}")
+        lines.extend(f"Warning: {warning}" for warning in self._export_warnings)
+        if not lines:
+            return
         dialog = QDialog(self)
-        dialog.setWindowTitle("Job status")
+        dialog.setWindowTitle("Export details")
         dialog.resize(620, 280)
         layout = QVBoxLayout(dialog)
         details = QPlainTextEdit()
         details.setReadOnly(True)
-        details.setPlainText(self._status_text)
+        details.setPlainText("\n".join(lines))
         layout.addWidget(details)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         dialog.exec()
+
+    def _set_export_state(self, state: str, *, issue: str = "",
+                          warnings: list[str] | None = None) -> None:
+        self._export_issue = issue
+        self._export_warnings = warnings or []
+        self._last_message = ""
+        colors = {
+            "idle": ("#747a82", "#ffffff"),
+            "blocked": ("#b84747", "#ffffff"),
+            "warnings": ("#e5b84f", "#24211a"),
+            "ready": ("#368c61", "#ffffff"),
+        }
+        background, foreground = colors[state]
+        if self.export_button.property("exportState") != state:
+            self.export_button.setProperty("exportState", state)
+            self.export_button.setStyleSheet(
+                f"QPushButton {{ background: {background}; color: {foreground}; "
+                "border: 1px solid #30343a; border-radius: 6px; "
+                "font-size: 15px; font-weight: bold; }")
+        self.export_button.setEnabled(state != "idle")
+        if state == "idle":
+            description = "Assign a cut to export."
+        elif state == "blocked":
+            description = f"Cannot export: {issue}"
+        elif state == "warnings":
+            count = len(self._export_warnings)
+            description = f"{count} warning{'s' if count != 1 else ''}. Export is available."
+        else:
+            description = "Ready to export."
+        self.export_info.setText(description)
+        self.export_info.setToolTip(description)
+        self.export_details_button.setEnabled(bool(issue or self._export_warnings))
 
     @staticmethod
     def _mark_invalid(widget: QWidget, invalid: bool) -> None:
@@ -915,7 +934,6 @@ class MainWindow(QMainWindow):
             if self._input_error:
                 raise CAMError(self._input_error)
             program = plan_program(self.job)
-            self.export_action.setEnabled(True)
             travel = QPainterPath()
             current_x: float | None = None
             current_y: float | None = None
@@ -930,24 +948,13 @@ class MainWindow(QMainWindow):
             travel_pen = QPen(QColor("#8190a3"), 1, Qt.PenStyle.DashLine)
             travel_pen.setCosmetic(True)
             self.scene.addPath(travel, travel_pen).setZValue(3)
-            x0, x1, y0, y1, z0, z1 = program.bounds
-            lines = [
-                f"Ready | Bounds (mm): X {number(x0)} to {number(x1)}, "
-                f"Y {number(y0)} to {number(y1)}, Z {number(z0)} to {number(z1)}"
-            ]
-            if drawing and drawing.warnings:
-                ordered = sorted(drawing.warnings,
-                                 key=lambda text: not any(word in text.lower() for word in
-                                                          ("unsupported", "invalid", "skipped")))
-                lines.extend(f"DXF notice: {notice}" for notice in ordered)
-            lines.extend(f"Warning: {warning}" for warning in program.warnings)
-            self._set_message("\n".join(lines))
+            warnings = list(drawing.warnings) if drawing else []
+            warnings.extend(program.warnings)
+            self._set_export_state("warnings" if warnings else "ready", warnings=warnings)
         except CAMError as exc:
-            self.export_action.setEnabled(False)
             issue = errors[0] if errors else str(exc)
-            is_error = bool(errors or self._input_error or (
-                self.job.operations and all(op.depth_mode is not None for op in self.job.operations)))
-            self._set_message(issue, error=is_error)
+            self._set_export_state("blocked" if self.job.operations else "idle", issue=issue)
+        self.export_action.setEnabled(bool(self.job.operations))
         self._refreshing = False
 
     def _export(self) -> None:

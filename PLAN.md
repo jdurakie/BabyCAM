@@ -121,7 +121,11 @@ Use PySide6 with Qt Widgets for the v1 desktop UI. Build the main window with
 selected-cut handles and overlays. The CAM model and toolpath calculations
 remain independent of Qt. Give the canvas most of the space, with
 layers/contours on one side, selected-operation settings on the other, and a
-compact warnings and export summary area. The workflow should take a few
+prominent **Export GCode** button below the cuts list. Keep the button grey
+without cuts, red when a cut cannot be exported, yellow when export is allowed
+with warnings, and green when ready. Show a brief reason and make full
+actionable warnings available through **Export details…**. Do not show routine
+import diagnostics or program bounds as warnings. The workflow should take a few
 selections without a wizard or modal dialog for each contour.
 
 Use a top-down, live 2D editor. Refresh it after tool, operation, placement,
@@ -152,8 +156,7 @@ Block export on missing settings or depth choices, invalid assigned geometry,
 impossible offsets or requested local edits, non-plunging tools, and unsafe
 XY rapids. Report warnings without blocking for negative XY, known-stock
 boundary excursions, missing usable cutting length, and nearby kept geometry.
-The export summary shows program X/Y/Z minima and maxima; v1 does not validate
-them against a machine travel envelope. First export asks for a `.nc`
+V1 does not validate program bounds against a machine travel envelope. First export asks for a `.nc`
 destination and the project remembers it; normal overwrite confirmation
 applies thereafter.
 
