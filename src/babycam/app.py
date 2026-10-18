@@ -781,17 +781,25 @@ class MainWindow(QMainWindow):
             for planned in paths:
                 graphic = _path(planned.points)
                 selected = selected_op and planned.operation.contour_id == selected_op.contour_id
-                if selected and self.job.tool.diameter:
-                    sweep_pen = QPen(QColor(80, 175, 255, 45), self.job.tool.diameter)
-                    self.scene.addPath(graphic, sweep_pen).setZValue(3)
                 color = "#e47d8f" if planned.operation.depth_mode == "through" else "#6bbce8"
+                diameter = self.job.tool.diameter
+                if diameter:
+                    sweep_color = QColor(color)
+                    sweep_color.setAlpha(90 if selected else 55)
+                    sweep_pen = QPen(sweep_color, diameter)
+                    sweep_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                    sweep_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                    sweep = self.scene.addPath(graphic, sweep_pen)
+                    sweep.setData(2, "cutter-sweep")
+                    sweep.setZValue(3)
                 pen = QPen(QColor(color), 2.5 if selected else 1.5)
                 pen.setCosmetic(True)
                 self.scene.addPath(graphic, pen).setZValue(4)
                 x, y = planned.points[0]
-                radius = max((self.job.tool.diameter or 1) / 5, 0.12)
+                radius = diameter / 2
                 marker = self.scene.addEllipse(x - radius, y - radius, 2 * radius, 2 * radius,
-                                               QPen(QColor(color)), QColor(color))
+                                               QPen(Qt.PenStyle.NoPen), QColor(color))
+                marker.setData(2, "start-marker")
                 marker.setZValue(5)
                 if planned.tabs:
                     segments = split_for_tabs(planned.points, planned.tabs, planned.tab_width)

@@ -37,7 +37,9 @@ Or install the project into a Python 3.11+ virtual environment and run
    edits to that job copy do not change the preset.
 6. Select one or more closed contours and assign an inside or outside cut.
    Select each cut and explicitly choose **Through** or **To depth**.
-7. Inspect the cutter-center paths, tabs, and dogbones, then export a GRBL `.nc` file.
+7. Inspect the cutter-center lines and cutter-width sweep, tabs, and dogbones,
+   then export a GRBL `.nc` file. The solid start circle matches the endmill
+   diameter.
 
 Dogbones are proposed only at sharp corners on the cutter side of a profile.
 Rounded contours and corners on the opposite side show a count of zero.
