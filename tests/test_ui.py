@@ -11,7 +11,8 @@ from ezdxf import units
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QPointF, Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
 
 from babycam.app import MainWindow  # noqa: E402
@@ -97,6 +98,31 @@ class UIWorkflowTests(unittest.TestCase):
         normal_width = path_item.pen().widthF()
         window.contours.setCurrentRow(0)
         self.assertGreater(path_item.pen().widthF(), normal_width)
+        window.close()
+        window.deleteLater()
+        APPLICATION.processEvents()
+
+    def test_clicking_inner_contour_replaces_selected_outer_contour(self):
+        window = MainWindow()
+        window.open_dxf(str(FIXTURE))
+        window.show()
+        APPLICATION.processEvents()
+        outer_id = next(contour.id for contour in window.job.drawing.contours
+                        if contour.layer == "OUTER")
+        inner_id = next(contour.id for contour in window.job.drawing.contours
+                        if contour.layer == "STABILIZER")
+        QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=window.canvas.mapFromScene(QPointF(17, 21)))
+        self.assertEqual({item.data(Qt.ItemDataRole.UserRole)
+                          for item in window.contours.selectedItems()}, {outer_id})
+
+        # This segment is inside the outer contour's enclosed area.
+        point = QPointF(17, 3.0191)
+        self.assertEqual(window.scene.items(point)[0].data(0), inner_id)
+        QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=window.canvas.mapFromScene(point))
+        self.assertEqual({item.data(Qt.ItemDataRole.UserRole)
+                          for item in window.contours.selectedItems()}, {inner_id})
         window.close()
         window.deleteLater()
         APPLICATION.processEvents()

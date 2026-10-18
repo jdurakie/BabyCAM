@@ -12,9 +12,9 @@ from pathlib import Path
 import ezdxf
 from ezdxf import units
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPen, QTransform
+from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPainterPathStroker, QPen, QTransform
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGraphicsItem,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGraphicsItem, QGraphicsPathItem,
     QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
     QPushButton, QSplitter, QSpinBox, QStyle, QTabWidget, QVBoxLayout, QWidget, QInputDialog,
@@ -55,6 +55,17 @@ def _positive_integer_field(field: QLineEdit) -> bool:
         return int(field.text()) > 0
     except ValueError:
         return False
+
+
+class ContourItem(QGraphicsPathItem):
+    """Select only near the contour line, not its enclosed area."""
+
+    def shape(self) -> QPainterPath:
+        stroker = QPainterPathStroker()
+        stroker.setWidth(0.5)  # Drawing coordinates are millimeters.
+        stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        return stroker.createStroke(self.path())
 
 
 class Canvas(QGraphicsView):
@@ -770,7 +781,9 @@ class MainWindow(QMainWindow):
                                   "#e79081" if contour.error else "#d3d8de"),
                            3.5 if is_selected else 1.5)
                 pen.setCosmetic(True)
-                item = self.scene.addPath(_path(placed(contour.points)), pen)
+                item = ContourItem(_path(placed(contour.points)))
+                item.setPen(pen)
+                self.scene.addItem(item)
                 item.setData(0, contour.id)
                 item.setData(1, bool(contour.error))
                 item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
