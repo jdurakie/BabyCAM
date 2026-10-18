@@ -870,6 +870,7 @@ class MainWindow(QMainWindow):
             item.setSelected(item.data(Qt.ItemDataRole.UserRole) in selected_ids)
         self.contours.blockSignals(False)
         self._highlight_contours(selected_ids)
+        QTimer.singleShot(0, self._deselect_cut)
 
     def _contour_selected(self) -> None:
         selected_ids = {item.data(Qt.ItemDataRole.UserRole) for item in self.contours.selectedItems()}
@@ -879,6 +880,11 @@ class MainWindow(QMainWindow):
                 item.setSelected(item.data(0) in selected_ids)
         self._refreshing = False
         self._highlight_contours(selected_ids)
+        self._deselect_cut()
+
+    def _deselect_cut(self) -> None:
+        if self.operations.currentItem() is not None:
+            self.operations.setCurrentRow(-1)
 
     def _highlight_contours(self, selected_ids: set[str]) -> None:
         for item in self.scene.items():

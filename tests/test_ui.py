@@ -174,6 +174,45 @@ class UIWorkflowTests(unittest.TestCase):
         window.deleteLater()
         APPLICATION.processEvents()
 
+    def test_selecting_another_contour_deselects_the_current_cut(self):
+        window = MainWindow()
+        window.open_dxf(str(FIXTURE))
+        window.tool_name.setText("flat")
+        window.diameter.setText("1")
+        window.can_plunge.setChecked(True)
+        outer_id = window.contours.item(0).data(Qt.ItemDataRole.UserRole)
+        inner_id = window.contours.item(2).data(Qt.ItemDataRole.UserRole)
+        window.contours.setCurrentRow(0)
+        window._assign("outside")
+        self.assertEqual(window._current_operation().contour_id, outer_id)
+
+        window.contours.setCurrentRow(2)
+        self.assertIsNone(window._current_operation())
+        self.assertEqual(window.cut_label.text(), "No cut selected")
+        self.assertEqual({item.data(Qt.ItemDataRole.UserRole)
+                          for item in window.contours.selectedItems()}, {inner_id})
+
+        window.contours.setCurrentRow(0)
+        window._select_operation_by_id(outer_id)
+        window.show()
+        APPLICATION.processEvents()
+        point = QPointF(17, 3.0191)
+        self.assertTrue(any(item.data(0) == inner_id for item in window.scene.items(point)))
+        QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=window.canvas.mapFromScene(point))
+        APPLICATION.processEvents()
+        self.assertIsNone(window._current_operation())
+        self.assertEqual(window.cut_label.text(), "No cut selected")
+
+        window._select_operation_by_id(outer_id)
+        QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=window.canvas.mapFromScene(QPointF(50, 50)))
+        APPLICATION.processEvents()
+        self.assertIsNone(window._current_operation())
+        window.close()
+        window.deleteLater()
+        APPLICATION.processEvents()
+
     def test_clicking_cut_centerline_selects_its_cut(self):
         window = MainWindow()
         window.open_dxf(str(FIXTURE))
