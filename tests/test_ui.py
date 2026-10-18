@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 
 from babycam.app import ContourItem, MainWindow  # noqa: E402
+from babycam.cam import planned_path  # noqa: E402
+from babycam.path_edits import lengths, place_tabs, point_at  # noqa: E402
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "keyboard_plate.dxf"
@@ -93,7 +95,7 @@ class UIWorkflowTests(unittest.TestCase):
             window.depth_mode.geometry().top() - window.cut_label.geometry().bottom(), 12)
         controls = (window.tabs, window.export_button, window.export_info,
                     window.cut_label, window.depth_mode,
-                    window.cut_depth, window.direction, window.cut_tabs, window.cut_tab_rise)
+                    window.cut_depth, window.direction, window.tab_auto_button, window.cut_tab_rise)
         positions = [control.geometry() for control in controls]
         window.depth_mode.setCurrentIndex(1)
         APPLICATION.processEvents()
@@ -345,8 +347,78 @@ class UIWorkflowTests(unittest.TestCase):
         self.assertTrue(window.job.operations[0].dogbones)
         self.assertIn("Dogbones 0", window.operations.item(0).text())
         self.assertEqual(window.dogbone_list.item(0).text(), "No sharp cutter-side corners found")
-        window.cut_tabs.setChecked(False)
+        initial_tabs = planned_path(window.job, window.job.operations[0], None).tabs
+        window.tab_manual_button.click()
+        self.assertEqual(len(window.job.operations[0].tab_anchors), len(initial_tabs))
+        window._stop_tab_placement()
+        window.tab_clear_button.click()
         self.assertFalse(window.job.operations[0].tabs)
+        window.close()
+        window.deleteLater()
+        APPLICATION.processEvents()
+
+    def test_manual_tab_placement_toggles_on_cut_and_exits_on_right_click(self):
+        window = MainWindow()
+        window.open_dxf(str(FIXTURE))
+        for field, value in ((window.thickness, "6"), (window.safe_z, "5"),
+                             (window.tool_name, "flat"), (window.diameter, "1"),
+                             (window.feed, "600"), (window.plunge, "250"),
+                             (window.rpm, "18000"), (window.stepdown, "1.5")):
+            field.setText(value)
+        window.can_plunge.setChecked(True)
+        window.contours.setCurrentRow(0)
+        window._assign("outside")
+        window.depth_mode.setCurrentIndex(1)
+        operation = window.job.operations[0]
+        path = planned_path(window.job, operation, None)
+        position = place_tabs(path.points, 6, 2, 4, 0.5)[0]
+        point = point_at(path.points, lengths(path.points), position)
+        window.show()
+        APPLICATION.processEvents()
+
+        window.tab_manual_button.click()
+        self.assertEqual(window._tab_placement_id, operation.contour_id)
+        self.assertFalse(window.tabs.isEnabled())
+        self.assertFalse(window.contours.isEnabled())
+        self.assertFalse(window.operations.isEnabled())
+        self.assertFalse(window.export_button.isEnabled())
+        self.assertFalse(window.export_action.isEnabled())
+        self.assertFalse(window.open_action.isEnabled())
+        self.assertTrue(window.canvas.mode_hint.isVisible())
+        QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=window.canvas.mapFromScene(QPointF(50, 50)))
+        APPLICATION.processEvents()
+        self.assertEqual(window._current_operation().contour_id, operation.contour_id)
+        screen_point = window.canvas.mapFromScene(QPointF(*point))
+        QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.LeftButton, pos=screen_point)
+        APPLICATION.processEvents()
+        self.assertTrue(operation.tabs)
+        self.assertEqual(len(planned_path(window.job, operation, None).tabs), 1)
+        QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.LeftButton, pos=screen_point)
+        APPLICATION.processEvents()
+        self.assertFalse(operation.tabs)
+        self.assertEqual(operation.tab_anchors, ())
+
+        QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.RightButton, pos=screen_point)
+        APPLICATION.processEvents()
+        self.assertIsNone(window._tab_placement_id)
+        self.assertTrue(window.tabs.isEnabled())
+        self.assertTrue(window.contours.isEnabled())
+        self.assertTrue(window.operations.isEnabled())
+        self.assertTrue(window.open_action.isEnabled())
+        self.assertFalse(window.canvas.mode_hint.isVisible())
+        window.tab_auto_button.click()
+        self.assertEqual(len(planned_path(window.job, operation, None).tabs), 4)
+        window.tab_clear_button.click()
+        self.assertFalse(operation.tabs)
+        operation.tab_width = 100
+        window.tab_auto_button.click()
+        self.assertFalse(operation.tabs)
+        self.assertIn("tab", window.tab_auto_button.toolTip().lower())
+        window.tab_manual_button.click()
+        QTest.keyClick(window, Qt.Key.Key_Escape)
+        APPLICATION.processEvents()
+        self.assertIsNone(window._tab_placement_id)
         window.close()
         window.deleteLater()
         APPLICATION.processEvents()

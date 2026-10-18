@@ -13,18 +13,19 @@ from typing import Callable
 import ezdxf
 from ezdxf import units
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import (QAction, QColor, QPainter, QPainterPath, QPainterPathStroker,
-                          QPalette, QPen, QTransform)
+from PySide6.QtGui import (QAction, QColor, QKeySequence, QPainter, QPainterPath,
+                          QPainterPathStroker, QPalette, QPen, QShortcut, QTransform)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QSpinBox, QTabWidget,
-    QVBoxLayout, QWidget,
+    QToolTip, QVBoxLayout, QWidget,
 )
 
-from .cam import (CAMError, dogbone_centers, grbl_gcode, number, plan_program, planned_path,
-                  preview_paths)
+from .cam import (CAMError, auto_tab_anchors, dogbone_centers, grbl_gcode, number,
+                  plan_program, planned_path, preview_paths, tab_anchors_from_positions,
+                  toggled_manual_tab_anchors)
 from .dxf_import import UnitSelectionRequired, load_dxf
 from .model import Job, Operation, Point, Tool
 from .path_edits import split_for_tabs
@@ -94,7 +95,7 @@ class ContourItem(QGraphicsPathItem):
 class CutHitItem(QGraphicsPathItem):
     """Catch centerline clicks without drawing over cutter or path previews."""
 
-    def __init__(self, path: QPainterPath, on_click: Callable[[], None]):
+    def __init__(self, path: QPainterPath, on_click: Callable[[Point], None]):
         super().__init__(path)
         self._on_click = on_click
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
@@ -108,7 +109,10 @@ class CutHitItem(QGraphicsPathItem):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             event.accept()
-            QTimer.singleShot(0, self._on_click)
+            scene_point = event.scenePos()
+            point = (scene_point.x(), scene_point.y())
+            callback = self._on_click
+            QTimer.singleShot(0, lambda: callback(point))
         else:
             event.ignore()
 
@@ -151,6 +155,35 @@ class Canvas(QGraphicsView):
         self.setBackgroundBrush(QColor("#181d24"))
         self.setTransform(QTransform.fromScale(1, -1))  # CNC coordinates: +Y is up.
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self.on_right_click: Callable[[], None] | None = None
+        self.mode_hint = QLabel(self.viewport())
+        self.mode_hint.setStyleSheet(
+            "background: rgba(16, 20, 27, 220); color: #ffffff; "
+            "border: 1px solid #78828f; border-radius: 4px; padding: 8px;")
+        self.mode_hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.mode_hint.hide()
+
+    def show_tab_hint(self, message: str | None) -> None:
+        if message is None:
+            self.mode_hint.hide()
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        self.mode_hint.setText(message)
+        self.mode_hint.adjustSize()
+        self.mode_hint.move(12, 12)
+        self.mode_hint.show()
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def mousePressEvent(self, event):  # type: ignore[override]
+        if event.button() == Qt.MouseButton.RightButton and self.on_right_click:
+            self.on_right_click()
+            event.accept()
+            return
+        if (self.on_right_click and event.button() == Qt.MouseButton.LeftButton
+                and not isinstance(self.itemAt(event.position().toPoint()), CutHitItem)):
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def wheelEvent(self, event):  # type: ignore[override]
         self.scale(1.15 if event.angleDelta().y() > 0 else 1 / 1.15,
@@ -175,6 +208,7 @@ class MainWindow(QMainWindow):
             self.library_error = f"Could not read tool library: {exc}"
         self._input_error: str | None = None
         self._refreshing = False
+        self._tab_placement_id: str | None = None
         self.setWindowTitle("BabyCAM")
         self.resize(1300, 800)
 
@@ -230,6 +264,10 @@ class MainWindow(QMainWindow):
         open_action = QAction("Open DXF…", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._open_dialog)
+        self.open_action = open_action
+        self.exit_tab_placement_shortcut = QShortcut(QKeySequence("Escape"), self)
+        self.exit_tab_placement_shortcut.activated.connect(self._stop_tab_placement)
+        self.exit_tab_placement_shortcut.setEnabled(False)
         export_action = QAction("Export GCode", self)
         export_action.setShortcut("Ctrl+E")
         export_action.triggered.connect(self._export)
@@ -298,7 +336,8 @@ class MainWindow(QMainWindow):
             self.export_button.setStyleSheet(
                 f"QPushButton {{ background: {background}; color: {foreground}; "
                 "border: 1px solid #30343a; border-radius: 6px; "
-                "font-size: 15px; font-weight: bold; }")
+                "font-size: 15px; font-weight: bold; } "
+                "QPushButton:disabled { background: #747a82; color: #ffffff; }")
         self.export_button.setEnabled(state != "idle")
         self._update_status_counts()
 
@@ -332,7 +371,7 @@ class MainWindow(QMainWindow):
         self._mark_invalid(self.depth_mode, operation is not None and self.depth_mode.currentIndex() == 0)
         self._mark_invalid(self.cut_depth, operation is not None and
                            self.depth_mode.currentIndex() == 2 and not _positive_field(self.cut_depth))
-        if operation is not None and self.cut_tabs.isChecked():
+        if operation is not None and operation.tabs:
             self._mark_invalid(self.cut_tab_width, not _positive_field(self.cut_tab_width))
             cut_rise = _float(self.cut_tab_rise.text())
             self._mark_invalid(self.cut_tab_rise, cut_rise is None or not 0 < cut_rise <= 100)
@@ -374,7 +413,7 @@ class MainWindow(QMainWindow):
         self.tab_max = ValidatedSpinBox()
         self.tab_max.setRange(1, 99)
         self.tab_max.setValue(4)
-        for label, spin in (("Minimum tabs", self.tab_min), ("Maximum tabs", self.tab_max)):
+        for label, spin in (("Auto min tabs", self.tab_min), ("Auto max tabs", self.tab_max)):
             spin.valueChanged.connect(self._read_fields)
             edit_form.addRow(label, spin)
         self.tab_width = self._field(edit_form, "Tab width (mm)", hint="stock thickness")
@@ -458,16 +497,27 @@ class MainWindow(QMainWindow):
         self.direction.addItems(["Climb", "Conventional"])
         self.direction.currentIndexChanged.connect(self._edit_operation)
         form.addRow("Cut direction", self.direction)
-        self.cut_tabs = QCheckBox("Holding tabs on this cut")
+        tab_controls = QWidget()
+        tab_row = QHBoxLayout(tab_controls)
+        tab_row.setContentsMargins(0, 0, 0, 0)
+        self.tab_auto_button = QPushButton("Auto")
+        self.tab_manual_button = QPushButton("Manual")
+        self.tab_clear_button = QPushButton("Clear")
+        self.tab_auto_button.clicked.connect(self._auto_tabs)
+        self.tab_manual_button.clicked.connect(self._start_tab_placement)
+        self.tab_clear_button.clicked.connect(self._clear_tabs)
+        for button in (self.tab_auto_button, self.tab_manual_button, self.tab_clear_button):
+            tab_row.addWidget(button)
+        form.addRow("Tabs", tab_controls)
         self.cut_dogbones = QCheckBox("Dogbones on this cut")
-        for checkbox in (self.cut_tabs, self.cut_dogbones):
-            checkbox.toggled.connect(self._edit_operation)
-            form.addRow(checkbox)
+        self.cut_dogbones.toggled.connect(self._edit_operation)
+        form.addRow(self.cut_dogbones)
         self.cut_tab_min = QSpinBox()
         self.cut_tab_min.setRange(1, 99)
         self.cut_tab_max = QSpinBox()
         self.cut_tab_max.setRange(1, 99)
-        for label, spin in (("Minimum tabs", self.cut_tab_min), ("Maximum tabs", self.cut_tab_max)):
+        for label, spin in (("Auto min tabs", self.cut_tab_min),
+                            ("Auto max tabs", self.cut_tab_max)):
             spin.valueChanged.connect(self._edit_operation)
             form.addRow(label, spin)
         self.cut_tab_width = ValidatedLineEdit()
@@ -747,6 +797,31 @@ class MainWindow(QMainWindow):
                 self.operations.setCurrentItem(item)
                 break
 
+    def _cut_clicked(self, identifier: str, point: Point) -> None:
+        if self._tab_placement_id is None:
+            self._select_operation_by_id(identifier)
+            return
+        if identifier != self._tab_placement_id:
+            self.canvas.show_tab_hint(
+                "Tab placement: click the selected cut.\nRight-click in the drawing or press Esc to finish.")
+            return
+        operation = self._current_operation()
+        if operation is None or operation.contour_id != identifier:
+            return
+        try:
+            anchors = toggled_manual_tab_anchors(self.job, operation, point)
+        except CAMError as exc:
+            self.canvas.show_tab_hint(
+                f"Cannot place tab: {exc}\nRight-click in the drawing or press Esc to finish.")
+            return
+        operation.tab_anchors = anchors
+        operation.tabs = bool(anchors)
+        self.canvas.show_tab_hint(
+            "Tab placement: click the selected cut to add or remove tabs.\n"
+            "Right-click in the drawing or press Esc to finish.")
+        self._update_operation_list()
+        self._refresh()
+
     def _operation_selected(self) -> None:
         operation = self._current_operation()
         self._refreshing = True
@@ -766,7 +841,6 @@ class MainWindow(QMainWindow):
             2 if operation and operation.depth_mode == "depth" else 0)
         self.cut_depth.setText(number(operation.depth) if operation and operation.depth else "")
         self.direction.setCurrentIndex(1 if operation and operation.direction == "conventional" else 0)
-        self.cut_tabs.setChecked(bool(operation and operation.tabs))
         self.cut_dogbones.setChecked(bool(operation and operation.dogbones))
         self.cut_tab_min.setValue((operation.tab_min if operation and operation.tab_min is not None
                                    else self.job.setup.tab_min))
@@ -797,11 +871,92 @@ class MainWindow(QMainWindow):
                 pass
         self.dogbone_list.blockSignals(False)
         self._set_cut_depth_enabled(bool(operation and operation.depth_mode == "depth"))
-        for widget in (self.cut_tabs, self.cut_dogbones, self.cut_tab_min, self.cut_tab_max,
+        for widget in (self.tab_auto_button, self.tab_manual_button, self.tab_clear_button,
+                       self.cut_dogbones, self.cut_tab_min, self.cut_tab_max,
                        self.cut_tab_width, self.cut_tab_rise):
             widget.setEnabled(operation is not None)
+        self.tab_clear_button.setEnabled(bool(operation and operation.tabs))
         self._refreshing = False
         self._refresh()
+
+    def _auto_tabs(self) -> None:
+        operation = self._current_operation()
+        if operation is None:
+            return
+        try:
+            anchors = auto_tab_anchors(self.job, operation)
+        except CAMError as exc:
+            self._show_tab_action_error(self.tab_auto_button, exc)
+            return
+        self.tab_auto_button.setToolTip("")
+        operation.tabs = True
+        operation.tab_anchors = anchors
+        self._update_operation_list()
+        self._operation_selected()
+
+    def _clear_tabs(self) -> None:
+        operation = self._current_operation()
+        if operation is None:
+            return
+        operation.tabs = False
+        operation.tab_anchors = ()
+        self._update_operation_list()
+        self._operation_selected()
+
+    def _start_tab_placement(self) -> None:
+        operation = self._current_operation()
+        if operation is None:
+            return
+        original_anchors = operation.tab_anchors
+        try:
+            current = planned_path(self.job, operation, None)
+            if operation.tabs and operation.tab_anchors is None:
+                operation.tab_anchors = tab_anchors_from_positions(
+                    self.job, operation, current.points, current.tabs)
+                planned_path(self.job, operation, None)
+            elif operation.tab_anchors is None:
+                operation.tab_anchors = ()
+        except CAMError as exc:
+            operation.tab_anchors = original_anchors
+            self._show_tab_action_error(self.tab_manual_button, exc)
+            return
+        self.tab_manual_button.setToolTip("")
+        self._tab_placement_id = operation.contour_id
+        self.canvas.on_right_click = self._stop_tab_placement
+        self.canvas.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.canvas.show_tab_hint(
+            "Tab placement: click the selected cut to add or remove tabs.\n"
+            "Right-click in the drawing or press Esc to finish.")
+        self.exit_tab_placement_shortcut.setEnabled(True)
+        self._apply_tab_placement_ui()
+
+    def _stop_tab_placement(self) -> None:
+        if self._tab_placement_id is None:
+            return
+        self._tab_placement_id = None
+        self.canvas.on_right_click = None
+        self.canvas.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self.canvas.show_tab_hint(None)
+        self.exit_tab_placement_shortcut.setEnabled(False)
+        for widget in (self.contours, self.operations, self.tabs):
+            widget.setEnabled(True)
+        self.open_action.setEnabled(True)
+        self._operation_selected()
+
+    def _apply_tab_placement_ui(self) -> None:
+        if self._tab_placement_id is None:
+            return
+        for widget in (self.contours, self.operations, self.tabs,
+                       self.export_button, self.export_details_button):
+            widget.setEnabled(False)
+        self.open_action.setEnabled(False)
+        self.export_action.setEnabled(False)
+
+    def _show_tab_action_error(self, button: QPushButton, error: CAMError) -> None:
+        message = str(error)
+        button.setToolTip(message)
+        QToolTip.showText(button.mapToGlobal(button.rect().bottomLeft()), message, button)
+        self._set_message(message, error=True)
 
     def _edit_operation(self, *_args) -> None:
         if self._refreshing:
@@ -810,7 +965,7 @@ class MainWindow(QMainWindow):
         if operation is None:
             return
         editing_depth = self.sender() is self.cut_depth
-        if (self.cut_tabs.isChecked() and
+        if (operation.tabs and
                 ((self.cut_tab_width.text().strip() and _float(self.cut_tab_width.text()) is None)
                  or _float(self.cut_tab_rise.text()) is None)):
             self._operation_selected()
@@ -820,7 +975,6 @@ class MainWindow(QMainWindow):
         operation.depth_mode = (None, "through", "depth")[self.depth_mode.currentIndex()]
         operation.depth = _float(self.cut_depth.text())
         operation.direction = "conventional" if self.direction.currentIndex() else "climb"
-        operation.tabs = self.cut_tabs.isChecked()
         operation.dogbones = self.cut_dogbones.isChecked()
         operation.tab_min = self.cut_tab_min.value()
         operation.tab_max = self.cut_tab_max.value()
@@ -972,7 +1126,8 @@ class MainWindow(QMainWindow):
                 pen.setCosmetic(True)
                 self.scene.addPath(graphic, pen).setZValue(4)
                 identifier = planned.operation.contour_id
-                hit = CutHitItem(graphic, lambda identifier=identifier: self._select_operation_by_id(identifier))
+                hit = CutHitItem(
+                    graphic, lambda point, identifier=identifier: self._cut_clicked(identifier, point))
                 hit.setData(2, "cut-hit")
                 hit.setData(3, identifier)
                 hit.setZValue(9)
@@ -1040,8 +1195,11 @@ class MainWindow(QMainWindow):
                 self._set_export_state("idle")
         self.export_action.setEnabled(bool(self.job.operations))
         self._refreshing = False
+        self._apply_tab_placement_ui()
 
     def _export(self) -> None:
+        if self._tab_placement_id is not None:
+            return
         try:
             if self._input_error:
                 raise CAMError(self._input_error)

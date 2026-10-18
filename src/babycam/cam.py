@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from shapely.geometry import Polygon
 
 from .model import Contour, Job, Operation, Point
-from .path_edits import add_dogbones, dogbone_candidates, place_tabs, split_for_tabs
+from .path_edits import (add_dogbones, dogbone_candidates, lengths, nearest_on_path,
+                         place_tabs, point_at, split_for_tabs, validate_tab_centers)
 
 
 class CAMError(ValueError):
@@ -83,7 +84,7 @@ def dogbone_centers(job: Job, operation: Operation, *, include_suppressed: bool 
         p for i, p in enumerate(candidates) if i not in operation.suppressed_dogbones)
 
 
-def profile_path(job: Job, operation: Operation) -> tuple[Point, ...]:
+def _source_contour_path(job: Job, operation: Operation) -> tuple[Point, ...]:
     drawing = job.drawing
     if drawing is None:
         raise CAMError("Load a DXF first.")
@@ -92,15 +93,20 @@ def profile_path(job: Job, operation: Operation) -> tuple[Point, ...]:
         raise CAMError(f"Contour {operation.contour_id} no longer exists.")
     if contour.error:
         raise CAMError(f"{contour.layer} contour: {contour.error}.")
+    min_x, min_y, _, _ = drawing.bounds
+    return tuple((x - min_x + job.setup.offset_x, y - min_y + job.setup.offset_y)
+                 for x, y in contour.points)
+
+
+def profile_path(job: Job, operation: Operation) -> tuple[Point, ...]:
+    points = list(_source_contour_path(job, operation))
+    contour_layer = next(c.layer for c in job.drawing.contours if c.id == operation.contour_id)
     diameter = _positive(job.tool.diameter, "endmill diameter")
     if operation.side not in {"inside", "outside"}:
         raise CAMError("Choose Inside or Outside for each cut.")
-    min_x, min_y, _, _ = drawing.bounds
-    points = [(x - min_x + job.setup.offset_x, y - min_y + job.setup.offset_y)
-              for x, y in contour.points]
     polygon = Polygon(points)
     if not polygon.is_valid or polygon.area <= 1e-8:
-        raise CAMError(f"{contour.layer} has invalid closed geometry.")
+        raise CAMError(f"{contour_layer} has invalid closed geometry.")
     signed_radius = diameter / 2 * (1 if operation.side == "outside" else -1)
     radius = diameter / 2
     # Bound the round-corner chord error to about 0.02 mm even for large bits.
@@ -108,10 +114,10 @@ def profile_path(job: Job, operation: Operation) -> tuple[Point, ...]:
     quarter_segments = max(8, math.ceil(math.pi / (4 * math.acos(1 - chord_tolerance / radius))))
     offset = polygon.buffer(signed_radius, quad_segs=quarter_segments, join_style="round")
     if offset.is_empty or offset.geom_type != "Polygon" or offset.interiors:
-        raise CAMError(f"{contour.layer} cannot fit a {number(diameter)} mm {operation.side} profile.")
+        raise CAMError(f"{contour_layer} cannot fit a {number(diameter)} mm {operation.side} profile.")
     ring = list(offset.exterior.coords)
     if len(ring) < 4:
-        raise CAMError(f"{contour.layer} offset has too few points.")
+        raise CAMError(f"{contour_layer} offset has too few points.")
     climb = operation.direction == "climb"
     if operation.direction not in {"climb", "conventional"}:
         raise CAMError("Choose Climb or Conventional cut direction.")
@@ -127,11 +133,7 @@ def profile_path(job: Job, operation: Operation) -> tuple[Point, ...]:
     return path
 
 
-def planned_path(job: Job, operation: Operation, depth: float | None) -> PlannedPath:
-    points = profile_path(job, operation)
-    centers = dogbone_centers(job, operation)
-    if not operation.tabs:
-        return PlannedPath(operation, points, depth, dogbones=centers)
+def _tab_settings(job: Job, operation: Operation) -> tuple[float, int, int, float]:
     width = operation.tab_width if operation.tab_width is not None else job.setup.tab_width
     if width is None:
         width = _positive(job.setup.thickness, "measured stock thickness")
@@ -141,12 +143,88 @@ def planned_path(job: Job, operation: Operation, depth: float | None) -> Planned
     rise = operation.tab_rise if operation.tab_rise is not None else job.setup.tab_rise
     if not math.isfinite(rise) or not 0 < rise <= 100:
         raise CAMError("Tab rise must be greater than 0% and at most 100%.")
+    return width, minimum, maximum, rise
+
+
+def tab_anchors_from_positions(job: Job, operation: Operation, path: tuple[Point, ...],
+                               positions: tuple[float, ...]) -> tuple[Point, ...]:
+    """Anchor tab locations to the source contour in DXF-local coordinates."""
+    source = _source_contour_path(job, operation)
+    distances = lengths(path)
+    result = []
+    for position in positions:
+        center = point_at(path, distances, position)
+        _, foot, _ = nearest_on_path(source, center)
+        result.append((foot[0] - job.setup.offset_x, foot[1] - job.setup.offset_y))
+    return tuple(result)
+
+
+def _positions_from_tab_anchors(job: Job, path: tuple[Point, ...],
+                                anchors: tuple[Point, ...], radius: float) -> tuple[float, ...]:
+    result = []
+    for anchor in anchors:
+        placed = (anchor[0] + job.setup.offset_x, anchor[1] + job.setup.offset_y)
+        position, _, distance = nearest_on_path(path, placed)
+        if distance > radius + 0.25:
+            raise CAMError("A tab no longer fits this cutter path; clear or reposition it.")
+        result.append(position)
+    return tuple(result)
+
+
+def auto_tab_anchors(job: Job, operation: Operation) -> tuple[Point, ...]:
+    """Preserve existing tabs, then add valid ones until the maximum or no space remains."""
+    current = planned_path(job, operation, None)
+    width, minimum, maximum, _ = _tab_settings(job, operation)
+    radius = _positive(job.tool.diameter, "endmill diameter") / 2
     try:
-        tabs = place_tabs(points, width, minimum, maximum, _positive(job.tool.diameter, "endmill diameter") / 2,
-                          centers)
+        positions = place_tabs(current.points, width, minimum, maximum, radius,
+                               current.dogbones, current.tabs)
+        anchors = tab_anchors_from_positions(job, operation, current.points, positions)
+        planned_path(job, replace(operation, tabs=True, tab_anchors=anchors), None)
     except ValueError as exc:
         raise CAMError(str(exc)) from exc
-    return PlannedPath(operation, points, depth, tabs, width, centers)
+    return anchors
+
+
+def toggled_manual_tab_anchors(job: Job, operation: Operation, click: Point) -> tuple[Point, ...]:
+    """Toggle a tab at a cutter-centerline click, without automatic count limits."""
+    current = planned_path(job, operation, None)
+    width, _, _, _ = _tab_settings(job, operation)
+    radius = _positive(job.tool.diameter, "endmill diameter") / 2
+    position, _, distance = nearest_on_path(current.points, click)
+    if distance > 0.5:
+        raise CAMError("Click close to the selected cut's centerline to place a tab.")
+    anchors = (operation.tab_anchors if operation.tab_anchors is not None else
+               tab_anchors_from_positions(job, operation, current.points, current.tabs))
+    existing = _positions_from_tab_anchors(job, current.points, anchors, radius)
+    perimeter = lengths(current.points)[-1]
+    remove = next((i for i, center in enumerate(existing)
+                   if min(abs(position - center), perimeter - abs(position - center))
+                   <= width / 2 + 0.5), None)
+    if remove is not None:
+        updated = anchors[:remove] + anchors[remove + 1:]
+    else:
+        updated = anchors + tab_anchors_from_positions(job, operation, current.points, (position,))
+    planned_path(job, replace(operation, tabs=bool(updated), tab_anchors=updated), None)
+    return updated
+
+
+def planned_path(job: Job, operation: Operation, depth: float | None) -> PlannedPath:
+    points = profile_path(job, operation)
+    centers = dogbone_centers(job, operation)
+    if not operation.tabs:
+        return PlannedPath(operation, points, depth, dogbones=centers)
+    width, minimum, maximum, _ = _tab_settings(job, operation)
+    radius = _positive(job.tool.diameter, "endmill diameter") / 2
+    try:
+        if operation.tab_anchors is None:
+            tabs = place_tabs(points, width, minimum, maximum, radius, centers)
+        else:
+            tabs = _positions_from_tab_anchors(job, points, operation.tab_anchors, radius)
+            validate_tab_centers(points, tabs, width, radius, centers)
+    except ValueError as exc:
+        raise CAMError(str(exc)) from exc
+    return PlannedPath(operation, points, depth, tuple(sorted(tabs)), width, centers)
 
 
 def target_depth(job: Job, operation: Operation) -> float:

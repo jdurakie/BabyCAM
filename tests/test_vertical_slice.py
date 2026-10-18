@@ -7,9 +7,11 @@ from pathlib import Path
 import ezdxf
 from ezdxf import units
 
-from babycam.cam import CAMError, dogbone_centers, grbl_gcode, plan_program, profile_path
+from babycam.cam import (CAMError, auto_tab_anchors, dogbone_centers, grbl_gcode,
+                         plan_program, planned_path, profile_path, toggled_manual_tab_anchors)
 from babycam.dxf_import import UnitSelectionRequired, load_dxf
 from babycam.model import Contour, Drawing, Job, Operation, Setup, Tool
+from babycam.path_edits import lengths, place_tabs, point_at
 from babycam.tool_library import copy_tool, load_tools, save_tools
 
 
@@ -166,6 +168,51 @@ class ProgramTests(unittest.TestCase):
         self.assertIn(-1.5, z_values)  # 75% rise leaves 25% of 6 mm cut depth.
         self.assertIn(-6.1, z_values)
         self.assertIn(-1.5, z_values[z_values.index(-6.1) + 1:])
+
+    def test_manual_tab_count_and_auto_fill_preserve_placed_tab(self):
+        job = keyboard_job()
+        outer = next(op for op in job.operations if op.side == "outside")
+        job.operations = [outer]
+        path = planned_path(job, outer, None)
+        position = place_tabs(path.points, 6, 2, 4, 0.5)[0]
+        click = point_at(path.points, lengths(path.points), position)
+        outer.tab_anchors = toggled_manual_tab_anchors(job, outer, click)
+        outer.tabs = True
+        self.assertEqual(len(plan_program(job).paths[0].tabs), 1)
+        original_anchor = outer.tab_anchors[0]
+
+        outer.tab_anchors = auto_tab_anchors(job, outer)
+        self.assertIn(original_anchor, outer.tab_anchors)
+        self.assertEqual(len(plan_program(job).paths[0].tabs), outer.tab_max or job.setup.tab_max)
+
+        job.setup.offset_x = 5
+        shifted = plan_program(job).paths[0]
+        self.assertEqual(len(shifted.tabs), 4)
+        self.assertAlmostEqual(point_at(shifted.points, lengths(shifted.points),
+                                        shifted.tabs[0])[0], click[0] + 5)
+        preserved = outer.tab_anchors
+        outer.tab_min = outer.tab_max = 99
+        with self.assertRaisesRegex(CAMError, "Only .* tab"):
+            auto_tab_anchors(job, outer)
+        self.assertEqual(outer.tab_anchors, preserved)
+
+    def test_manual_tab_rejects_start_and_toggles_existing_tab(self):
+        job = keyboard_job()
+        outer = next(op for op in job.operations if op.side == "outside")
+        job.operations = [outer]
+        path = planned_path(job, outer, None)
+        with self.assertRaisesRegex(CAMError, "start or end"):
+            toggled_manual_tab_anchors(job, outer, path.points[0])
+        positions = place_tabs(path.points, 6, 2, 4, 0.5)
+        click = point_at(path.points, lengths(path.points), positions[0])
+        outer.tab_anchors = toggled_manual_tab_anchors(job, outer, click)
+        outer.tabs = True
+        outer.tab_max = 1
+        second = point_at(path.points, lengths(path.points), positions[1])
+        outer.tab_anchors = toggled_manual_tab_anchors(job, outer, second)
+        self.assertEqual(len(plan_program(job).paths[0].tabs), 2)
+        outer.tab_anchors = toggled_manual_tab_anchors(job, outer, second)
+        self.assertEqual(toggled_manual_tab_anchors(job, outer, click), ())
 
     def test_impossible_tabs_are_rejected_during_path_creation(self):
         job = keyboard_job()

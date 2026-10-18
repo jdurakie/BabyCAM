@@ -106,6 +106,13 @@ locations can be individually edited. The source DXF stays unchanged.
   below the top over it. For Through, calculate the percentage from stock
   thickness, excluding the cut-through allowance. Tabs requested on To depth
   cuts still make raised bridges in those grooves.
+- Per-cut **Auto** preserves existing tabs and adds well-spaced tabs until the
+  maximum or no valid location remains, failing if below the automatic minimum.
+  **Manual** locks the selected cut for centerline clicks that add or remove
+  tabs; right-click in the drawing or Esc ends placement. Manual counts are
+  user chosen.
+  **Clear** removes all tabs from that cut. Stored tab anchors follow DXF
+  placement and are reprojected when the cutter path changes.
 - A requested edit that cannot fit the contour's local geometry must be
   impossible to create: explain the problem inline, including when a global
   switch requested it during bulk creation. If a tool edit would make an

@@ -73,6 +73,7 @@ class Operation:
     depth: float | None = None
     direction: str = "climb"  # climb | conventional
     tabs: bool = False
+    tab_anchors: tuple[Point, ...] | None = None  # None uses automatic placement.
     dogbones: bool = False
     tab_min: int | None = None
     tab_max: int | None = None

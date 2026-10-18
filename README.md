@@ -46,6 +46,12 @@ Or install the project into a Python 3.11+ virtual environment and run
    shows the full messages, including the saved file path. The solid start
    circle matches the endmill diameter.
 
+For a selected cut, **Tabs → Auto** keeps existing tabs and adds valid ones up
+to the auto maximum. **Manual** enters tab placement: click the selected cut's
+centerline to add a tab, or click an existing tab to remove it. Right-click in
+the drawing or press Esc to finish. **Clear** removes all tabs from that cut.
+Auto minimum and maximum counts do not limit manual placement.
+
 Dogbones are proposed only at sharp corners on the cutter side of a profile.
 Rounded contours and corners on the opposite side show a count of zero.
 

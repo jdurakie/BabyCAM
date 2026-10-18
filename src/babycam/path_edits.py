@@ -1,4 +1,4 @@
-"""Automatic relief and holding-tab geometry in millimeters."""
+"""Relief and holding-tab geometry in millimeters."""
 
 from __future__ import annotations
 
@@ -91,14 +91,58 @@ def point_at(points: tuple[Point, ...], distances: tuple[float, ...], position: 
     return points[-1]
 
 
+def nearest_on_path(points: tuple[Point, ...], point: Point) -> tuple[float, Point, float]:
+    """Return perimeter distance, closest point, and distance from a point."""
+    distances = lengths(points)
+    nearest: tuple[float, Point, float] | None = None
+    for i, (a, b) in enumerate(zip(points, points[1:])):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        span_squared = dx * dx + dy * dy
+        if span_squared < 1e-12:
+            continue
+        t = max(0.0, min(1.0, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / span_squared))
+        foot = (a[0] + t * dx, a[1] + t * dy)
+        candidate = (distances[i] + t * math.sqrt(span_squared), foot, _distance(point, foot))
+        if nearest is None or candidate[2] < nearest[2]:
+            nearest = candidate
+    if nearest is None:
+        raise ValueError("Cut has no usable path for tab placement.")
+    return nearest
+
+
+def validate_tab_centers(points: tuple[Point, ...], centers: tuple[float, ...], width: float,
+                         radius: float, avoid: tuple[Point, ...] = ()) -> None:
+    """Apply the same fit and spacing limits to automatic and manual tabs."""
+    distances = lengths(points)
+    perimeter = distances[-1]
+    margin = width / 2 + radius
+    if width <= 0 or radius <= 0 or perimeter <= width:
+        raise ValueError("Tab width cannot fit this contour.")
+    for center in centers:
+        if not math.isfinite(center) or center < margin or perimeter - center < margin:
+            raise ValueError("Tab is too close to the cut start or end.")
+        if any(_distance(point_at(points, distances, center), p) < margin + radius
+               for p in avoid):
+            raise ValueError("Tab is too close to a dogbone relief.")
+    for i, center in enumerate(centers):
+        for other in centers[i + 1:]:
+            separation = abs(center - other)
+            if min(separation, perimeter - separation) < width + 2 * radius - 1e-8:
+                raise ValueError("Tabs are too close together for this endmill and tab width.")
+
+
 def place_tabs(points: tuple[Point, ...], width: float, minimum: int, maximum: int,
-               radius: float, avoid: tuple[Point, ...] = ()) -> tuple[float, ...]:
+               radius: float, avoid: tuple[Point, ...] = (),
+               existing: tuple[float, ...] = ()) -> tuple[float, ...]:
     """Return well-spaced perimeter positions; reject a contour that cannot fit the minimum."""
     distances = lengths(points)
     perimeter = distances[-1]
     margin = width / 2 + radius
     if width <= 0 or minimum < 1 or maximum < minimum or perimeter <= width:
         raise ValueError("Tab width or count cannot fit this contour.")
+    if len(existing) > maximum:
+        raise ValueError("Existing tabs exceed the maximum; increase it or clear tabs first.")
+    validate_tab_centers(points, existing, width, radius, avoid)
     candidates: list[float] = []
     for i, (a, b) in enumerate(zip(points, points[1:])):
         span = distances[i + 1] - distances[i]
@@ -114,7 +158,10 @@ def place_tabs(points: tuple[Point, ...], width: float, minimum: int, maximum: i
         candidates = [perimeter * (i + 0.5) / count for i in range(count)]
     candidates = [s for s in candidates if min(s, perimeter - s) >= margin and
                   all(_distance(point_at(points, distances, s), p) >= margin + radius for p in avoid)]
-    selected: list[float] = []
+    selected: list[float] = list(existing)
+    candidates = [s for s in candidates if all(
+        min(abs(s - center), perimeter - abs(s - center)) >= width + 2 * radius - 1e-8
+        for center in selected)]
     while len(selected) < maximum and candidates:
         if selected:
             candidate = max(candidates, key=lambda s: min(min(abs(s - t), perimeter - abs(s - t))
