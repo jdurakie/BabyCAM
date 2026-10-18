@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QDialog, QFileDialog, QGraphicsScene, QMessageBox, QPlainTextEdit, QPushButton,
 )
 
-from babycam.app import ContourItem, MainWindow  # noqa: E402
+from babycam.app import ContourItem, MainWindow, _tab_crossbar  # noqa: E402
 from babycam.cam import planned_path  # noqa: E402
 from babycam.path_edits import lengths, place_tabs, point_at  # noqa: E402
 
@@ -28,6 +28,11 @@ APPLICATION = QApplication.instance() or QApplication([])
 
 
 class UIWorkflowTests(unittest.TestCase):
+    def test_tab_crossbar_spans_cutter_width_perpendicular_to_path(self):
+        points = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0))
+        self.assertEqual(_tab_crossbar(points, 5, 2), ((5, -1), (5, 1)))
+        self.assertEqual(_tab_crossbar(points, 15, 2), ((11, 5), (9, 5)))
+
     def test_selected_cut_panel_follows_cut_selection(self):
         window = MainWindow()
         self.assertFalse(window.selected_cut_box.isEnabled())
@@ -371,11 +376,15 @@ class UIWorkflowTests(unittest.TestCase):
         self.assertIn("Dogbones 0", window.operations.item(0).text())
         self.assertEqual(window.dogbone_list.item(0).text(), "No sharp cutter-side corners found")
         initial_tabs = planned_path(window.job, window.job.operations[0], None).tabs
+        crossbars = [item for item in window.scene.items() if item.data(2) == "tab-crossbar"]
+        self.assertEqual(len(crossbars), len(initial_tabs))
+        self.assertTrue(all(abs(item.line().length() - 1) < 1e-9 for item in crossbars))
         window.tab_manual_button.click()
         self.assertEqual(len(window.job.operations[0].tab_anchors), len(initial_tabs))
         window._stop_tab_placement()
         window.tab_clear_button.click()
         self.assertFalse(window.job.operations[0].tabs)
+        self.assertFalse(any(item.data(2) == "tab-crossbar" for item in window.scene.items()))
         window.close()
         window.deleteLater()
         APPLICATION.processEvents()

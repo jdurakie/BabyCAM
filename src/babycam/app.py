@@ -28,7 +28,7 @@ from .cam import (CAMError, auto_tab_anchors, dogbone_centers, grbl_gcode, numbe
                   toggled_manual_tab_anchors)
 from .dxf_import import UnitSelectionRequired, load_dxf
 from .model import Job, Operation, Point, Tool
-from .path_edits import split_for_tabs
+from .path_edits import lengths, point_at, split_for_tabs
 from .tool_library import copy_tool, load_tools, save_tools
 
 
@@ -39,6 +39,19 @@ def _path(points: tuple[Point, ...] | list[Point]) -> QPainterPath:
         for point in points[1:]:
             graphic.lineTo(*point)
     return graphic
+
+
+def _tab_crossbar(points: tuple[Point, ...], position: float,
+                  diameter: float) -> tuple[Point, Point] | None:
+    distances = lengths(points)
+    x, y = point_at(points, distances, position)
+    for index, (a, b) in enumerate(zip(points, points[1:])):
+        span = distances[index + 1] - distances[index]
+        if span > 1e-9 and position <= distances[index + 1] + 1e-9:
+            nx = -(b[1] - a[1]) / span * diameter / 2
+            ny = (b[0] - a[0]) / span * diameter / 2
+            return (x - nx, y - ny), (x + nx, y + ny)
+    return None
 
 
 def _float(text: str) -> float | None:
@@ -1152,6 +1165,15 @@ class MainWindow(QMainWindow):
                     for (a, is_tab), (b, _) in zip(segments, segments[1:]):
                         if is_tab:
                             self.scene.addLine(a[0], a[1], b[0], b[1], tab_pen).setZValue(6)
+                    crossbar_pen = QPen(tab_pen)
+                    crossbar_pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+                    for position in planned.tabs:
+                        crossbar = _tab_crossbar(planned.points, position, diameter)
+                        if crossbar:
+                            a, b = crossbar
+                            marker = self.scene.addLine(a[0], a[1], b[0], b[1], crossbar_pen)
+                            marker.setData(2, "tab-crossbar")
+                            marker.setZValue(7)
                 relief_pen = QPen(QColor("#f6a552"), 2.5)
                 relief_pen.setCosmetic(True)
                 for i, (bx, by) in enumerate(planned.points):
