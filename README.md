@@ -36,7 +36,8 @@ Or install the project into a Python 3.11+ virtual environment and run
    **Use preset** copies it into the current job;
    edits to that job copy do not change the preset.
 6. Select one or more closed contours and assign an inside or outside cut.
-   Select each cut and explicitly choose **Through** or **To depth**.
+   Select each cut from the cuts list or by clicking its cutter centerline in
+   the drawing, then explicitly choose **Through** or **To depth**.
 7. Inspect the cutter-center lines and cutter-width sweep, tabs, and dogbones,
    then use **Export GCode** below the cuts list to save a GRBL `.nc` file.
    Grey means no cuts are assigned, red means a required setting blocks export,

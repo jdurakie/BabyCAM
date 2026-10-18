@@ -8,10 +8,11 @@ import sys
 from ctypes import CDLL
 from dataclasses import replace
 from pathlib import Path
+from typing import Callable
 
 import ezdxf
 from ezdxf import units
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPainterPathStroker, QPen, QTransform
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
@@ -58,15 +59,19 @@ def _positive_integer_field(field: QLineEdit) -> bool:
         return False
 
 
+def _centerline_hit_shape(path: QPainterPath) -> QPainterPath:
+    stroker = QPainterPathStroker()
+    stroker.setWidth(0.5)  # Drawing coordinates are millimeters.
+    stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+    stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    return stroker.createStroke(path)
+
+
 class ContourItem(QGraphicsPathItem):
     """Select only near the contour line, not its enclosed area."""
 
     def shape(self) -> QPainterPath:
-        stroker = QPainterPathStroker()
-        stroker.setWidth(0.5)  # Drawing coordinates are millimeters.
-        stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
-        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        return stroker.createStroke(self.path())
+        return _centerline_hit_shape(self.path())
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         # Qt's default selected-item box uses the cosmetic pen width as scene
@@ -74,6 +79,28 @@ class ContourItem(QGraphicsPathItem):
         painter.setPen(self.pen())
         painter.setBrush(self.brush())
         painter.drawPath(self.path())
+
+
+class CutHitItem(QGraphicsPathItem):
+    """Catch centerline clicks without drawing over cutter or path previews."""
+
+    def __init__(self, path: QPainterPath, on_click: Callable[[], None]):
+        super().__init__(path)
+        self._on_click = on_click
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+
+    def shape(self) -> QPainterPath:
+        return _centerline_hit_shape(self.path())
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        pass
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            event.accept()
+            QTimer.singleShot(0, self._on_click)
+        else:
+            event.ignore()
 
 
 def _paint_invalid_outline(widget: QWidget) -> None:
@@ -692,6 +719,13 @@ class MainWindow(QMainWindow):
         identifier = item.data(Qt.ItemDataRole.UserRole)
         return next((op for op in self.job.operations if op.contour_id == identifier), None)
 
+    def _select_operation_by_id(self, identifier: str) -> None:
+        for index in range(self.operations.count()):
+            item = self.operations.item(index)
+            if item.data(Qt.ItemDataRole.UserRole) == identifier:
+                self.operations.setCurrentItem(item)
+                break
+
     def _operation_selected(self) -> None:
         operation = self._current_operation()
         self._refreshing = True
@@ -896,6 +930,12 @@ class MainWindow(QMainWindow):
                 pen = QPen(QColor(color), 2.5 if selected else 1.5)
                 pen.setCosmetic(True)
                 self.scene.addPath(graphic, pen).setZValue(4)
+                identifier = planned.operation.contour_id
+                hit = CutHitItem(graphic, lambda identifier=identifier: self._select_operation_by_id(identifier))
+                hit.setData(2, "cut-hit")
+                hit.setData(3, identifier)
+                hit.setZValue(9)
+                self.scene.addItem(hit)
                 x, y = planned.points[0]
                 radius = diameter / 2
                 marker = self.scene.addEllipse(x - radius, y - radius, 2 * radius, 2 * radius,

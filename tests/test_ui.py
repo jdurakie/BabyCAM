@@ -168,6 +168,55 @@ class UIWorkflowTests(unittest.TestCase):
         window.deleteLater()
         APPLICATION.processEvents()
 
+    def test_clicking_cut_centerline_selects_its_cut(self):
+        window = MainWindow()
+        window.open_dxf(str(FIXTURE))
+        for field, value in ((window.thickness, "6"), (window.safe_z, "5"),
+                             (window.tool_name, "flat"), (window.diameter, "1"),
+                             (window.feed, "600"), (window.plunge, "250"),
+                             (window.rpm, "18000"), (window.stepdown, "1.5")):
+            field.setText(value)
+        window.can_plunge.setChecked(True)
+        outer_id = next(contour.id for contour in window.job.drawing.contours
+                        if contour.layer == "OUTER")
+        inner_id = next(contour.id for contour in window.job.drawing.contours
+                        if contour.layer == "STABILIZER")
+        window.contours.setCurrentRow(0)
+        window._assign("outside")
+        window.contours.setCurrentRow(2)
+        window._assign("inside")
+        window.show()
+        APPLICATION.processEvents()
+
+        def centerline_point(identifier):
+            hit = next(item for item in window.scene.items()
+                       if item.data(2) == "cut-hit" and item.data(3) == identifier)
+            path = hit.path()
+            segments = [(path.elementAt(i), path.elementAt(i + 1))
+                        for i in range(path.elementCount() - 1)]
+            start, end = max(segments, key=lambda pair:
+                             (pair[1].x - pair[0].x) ** 2 + (pair[1].y - pair[0].y) ** 2)
+            return QPointF((start.x + end.x) / 2, (start.y + end.y) / 2)
+
+        window._select_operation_by_id(outer_id)
+        window.contours.setCurrentRow(0)  # A selected contour sits above previews.
+        point = centerline_point(inner_id)
+        self.assertEqual(window.scene.items(point)[0].data(3), inner_id)
+        QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=window.canvas.mapFromScene(point))
+        APPLICATION.processEvents()
+        self.assertEqual(window._current_operation().contour_id, inner_id)
+        self.assertEqual(window.cut_label.text(), inner_id)
+
+        point = centerline_point(outer_id)
+        QTest.mouseClick(window.canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=window.canvas.mapFromScene(point))
+        APPLICATION.processEvents()
+        self.assertEqual(window._current_operation().contour_id, outer_id)
+        window.close()
+        window.deleteLater()
+        APPLICATION.processEvents()
+
     def test_sharp_inside_corners_have_visible_dogbones(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "square.dxf"
