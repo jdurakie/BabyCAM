@@ -51,7 +51,7 @@ Rounded contours and corners on the opposite side show a count of zero.
 
 The current build has one active endmill and no project saving or packaged
 installers yet. The preview marks cuts with missing or invalid depths red and
-uses distinct blue shades for valid Through and To depth cuts. Spindle control
+uses cyan for valid Through cuts and blue for valid To depth cuts. Spindle control
 starts unchecked; enable it only when the controller should emit M3/M5.
 Negative XY is allowed and reported; the stock thickness is required, while
 stock width and height are optional. Validate machine setup and cutting

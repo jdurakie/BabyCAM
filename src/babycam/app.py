@@ -61,10 +61,10 @@ def _positive_integer_field(field: QLineEdit) -> bool:
 
 def _cut_preview_color(operation: Operation) -> str:
     if operation.depth_mode == "through":
-        return "#6bbce8"
+        return "#42d2e8"
     if (operation.depth_mode == "depth" and operation.depth is not None
             and math.isfinite(operation.depth) and operation.depth > 0):
-        return "#6798dc"
+        return "#7890ff"
     return "#e47d8f"
 
 
