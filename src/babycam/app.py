@@ -45,6 +45,18 @@ def _float(text: str) -> float | None:
         return None
 
 
+def _positive_field(field: QLineEdit) -> bool:
+    value = _float(field.text())
+    return value is not None and value > 0
+
+
+def _positive_integer_field(field: QLineEdit) -> bool:
+    try:
+        return int(field.text()) > 0
+    except ValueError:
+        return False
+
+
 class Canvas(QGraphicsView):
     def __init__(self, scene: QGraphicsScene, parent: QWidget | None = None):
         super().__init__(scene, parent)
@@ -152,6 +164,45 @@ class MainWindow(QMainWindow):
         if error:
             icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
             self.message_icon.setPixmap(icon.pixmap(20, 20))
+
+    @staticmethod
+    def _mark_invalid(widget: QWidget, invalid: bool) -> None:
+        if widget.property("invalid") == invalid:
+            return
+        widget.setProperty("invalid", invalid)
+        kind = "QComboBox" if isinstance(widget, QComboBox) else "QSpinBox" if isinstance(widget, QSpinBox) else "QLineEdit"
+        widget.setStyleSheet(f"{kind} {{ border: 2px solid #c94343; border-radius: 3px; }}" if invalid else "")
+
+    def _update_field_highlights(self) -> None:
+        for field in (self.thickness, self.safe_z, self.diameter, self.feed,
+                      self.plunge, self.stepdown):
+            self._mark_invalid(field, not _positive_field(field))
+        self._mark_invalid(self.tool_name, not bool(self.tool_name.text().strip()))
+        for field in (self.tool_number, self.rpm):
+            self._mark_invalid(field, not _positive_integer_field(field))
+        for field in (self.stock_width, self.stock_height, self.cutting_length, self.tab_width):
+            self._mark_invalid(field, bool(field.text().strip()) and not _positive_field(field))
+        for field in (self.offset_x, self.offset_y, self.allowance, self.delay,
+                      self.dogbone_clearance):
+            value = _float(field.text())
+            self._mark_invalid(field, value is None or (field in (self.allowance, self.delay,
+                                                                  self.dogbone_clearance) and value < 0))
+        rise = _float(self.tab_rise.text())
+        self._mark_invalid(self.tab_rise, rise is None or not 0 < rise <= 100)
+        count_invalid = self.tab_min.value() > self.tab_max.value()
+        self._mark_invalid(self.tab_min, count_invalid)
+        self._mark_invalid(self.tab_max, count_invalid)
+        operation = self._current_operation()
+        self._mark_invalid(self.depth_mode, operation is not None and self.depth_mode.currentIndex() == 0)
+        self._mark_invalid(self.cut_depth, operation is not None and
+                           self.depth_mode.currentIndex() == 2 and not _positive_field(self.cut_depth))
+        if operation is not None and self.cut_tabs.isChecked():
+            self._mark_invalid(self.cut_tab_width, not _positive_field(self.cut_tab_width))
+            cut_rise = _float(self.cut_tab_rise.text())
+            self._mark_invalid(self.cut_tab_rise, cut_rise is None or not 0 < cut_rise <= 100)
+        else:
+            self._mark_invalid(self.cut_tab_width, False)
+            self._mark_invalid(self.cut_tab_rise, False)
 
     def _field(self, form: QFormLayout, label: str, initial: str = "", hint: str = "") -> QLineEdit:
         field = QLineEdit(initial)
@@ -594,6 +645,7 @@ class MainWindow(QMainWindow):
         operation = self._current_operation()
         if operation is None:
             return
+        editing_depth = self.sender() is self.cut_depth
         if (self.cut_tabs.isChecked() and
                 ((self.cut_tab_width.text().strip() and _float(self.cut_tab_width.text()) is None)
                  or _float(self.cut_tab_rise.text()) is None)):
@@ -621,8 +673,10 @@ class MainWindow(QMainWindow):
             return
         self.cut_depth.setEnabled(operation.depth_mode == "depth")
         self._update_operation_list()
-        self._operation_selected()
-        self._refresh()
+        if editing_depth:
+            self._refresh()  # Keep partially typed values in the depth field.
+        else:
+            self._operation_selected()
 
     def _toggle_dogbone_candidate(self, item: QListWidgetItem) -> None:
         if self._refreshing:
@@ -688,6 +742,7 @@ class MainWindow(QMainWindow):
     def _refresh(self, fit: bool = False) -> None:
         if self._refreshing:
             return
+        self._update_field_highlights()
         self._refreshing = True
         selected_ids = {item.data(Qt.ItemDataRole.UserRole) for item in self.contours.selectedItems()}
         self.scene.clear()

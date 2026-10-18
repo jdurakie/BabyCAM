@@ -22,6 +22,50 @@ APPLICATION = QApplication.instance() or QApplication([])
 
 
 class UIWorkflowTests(unittest.TestCase):
+    def test_required_fields_turn_red_until_valid(self):
+        window = MainWindow()
+        for field in (window.thickness, window.safe_z, window.tool_name, window.diameter,
+                      window.feed, window.plunge, window.rpm, window.stepdown):
+            self.assertTrue(field.property("invalid"))
+        self.assertFalse(window.tool_number.property("invalid"))
+        self.assertFalse(window.cutting_length.property("invalid"))
+        window.thickness.setText("0")
+        self.assertTrue(window.thickness.property("invalid"))
+        window.thickness.setText("6")
+        self.assertFalse(window.thickness.property("invalid"))
+        window.feed.setText("abc")
+        self.assertTrue(window.feed.property("invalid"))
+        window.feed.setText("600")
+        self.assertFalse(window.feed.property("invalid"))
+        window.close()
+        window.deleteLater()
+        APPLICATION.processEvents()
+
+    def test_to_depth_field_stays_editable_and_marks_invalid_values(self):
+        window = MainWindow()
+        window.open_dxf(str(FIXTURE))
+        for field, value in ((window.thickness, "6"), (window.safe_z, "5"),
+                             (window.tool_name, "flat"), (window.diameter, "1"),
+                             (window.feed, "600"), (window.plunge, "250"),
+                             (window.rpm, "18000"), (window.stepdown, "1.5")):
+            field.setText(value)
+        window.can_plunge.setChecked(True)
+        window.contours.setCurrentRow(0)
+        window._assign("outside")
+        self.assertTrue(window.depth_mode.property("invalid"))
+        window.depth_mode.setCurrentIndex(2)
+        self.assertFalse(window.depth_mode.property("invalid"))
+        self.assertTrue(window.cut_depth.property("invalid"))
+        window.cut_depth.setText("2.")
+        self.assertEqual(window.cut_depth.text(), "2.")
+        self.assertFalse(window.cut_depth.property("invalid"))
+        window.cut_depth.setText("2.5")
+        self.assertEqual(window.job.operations[0].depth, 2.5)
+        self.assertTrue(window.export_action.isEnabled())
+        window.close()
+        window.deleteLater()
+        APPLICATION.processEvents()
+
     def test_preset_update_and_delete_require_confirmation(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch("babycam.tool_library.library_path", return_value=Path(directory) / "tools.json"):
