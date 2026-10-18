@@ -42,8 +42,9 @@ Or install the project into a Python 3.11+ virtual environment and run
    then use **Export GCode** below the cuts list to save a GRBL `.nc` file.
    Grey means no cuts are assigned, red means a required setting blocks export,
    yellow means export is available with warnings, and green means ready.
-   **Export details…** explains blockers and warnings. The solid start circle
-   matches the endmill diameter.
+   The line below the button shows warning and error counts. **Status details**
+   shows the full messages, including the saved file path. The solid start
+   circle matches the endmill diameter.
 
 Dogbones are proposed only at sharp corners on the cutter side of a profile.
 Rounded contours and corners on the opposite side show a count of zero.

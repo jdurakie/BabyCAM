@@ -123,10 +123,10 @@ remain independent of Qt. Give the canvas most of the space, with
 layers/contours on one side, selected-operation settings on the other, and a
 prominent **Export GCode** button below the cuts list. Keep the button grey
 without cuts, red when a cut cannot be exported, yellow when export is allowed
-with warnings, and green when ready. Show a brief reason and make full
-actionable warnings available through **Export details…**. Do not show routine
-import diagnostics or program bounds as warnings. The workflow should take a few
-selections without a wizard or modal dialog for each contour.
+with warnings, and green when ready. Show only warning and error counts below
+the button; make full messages available through **Status details**. Do not
+show routine import diagnostics or program bounds as warnings. The workflow
+should take a few selections without a wizard or modal dialog for each contour.
 
 Use a top-down, live 2D editor. Refresh it after tool, operation, placement,
 start-point, tab, or dogbone edits. Show thin paths for the job, a subtle

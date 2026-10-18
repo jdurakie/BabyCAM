@@ -188,16 +188,17 @@ class MainWindow(QMainWindow):
         self.export_button.clicked.connect(self._export)
         left_layout.addWidget(self.export_button)
         self.export_info = QLabel()
-        self.export_info.setWordWrap(True)
-        self.export_info.setFixedHeight(50)
-        self.export_info.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.export_info.setWordWrap(False)
+        self.export_info.setFixedHeight(28)
+        self.export_info.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         left_layout.addWidget(self.export_info)
-        self.export_details_button = QPushButton("Export details…")
+        self.export_details_button = QPushButton("Status details")
         self.export_details_button.clicked.connect(self._show_export_details)
         left_layout.addWidget(self.export_details_button)
         self._export_issue = ""
         self._export_warnings: list[str] = []
         self._last_message = ""
+        self._last_message_error = False
 
         self.tabs = QTabWidget()
         self._setup_tab()
@@ -234,21 +235,30 @@ class MainWindow(QMainWindow):
 
     def _set_message(self, text: str, *, error: bool = False) -> None:
         self._last_message = f"Error: {text}" if error else text
-        self.export_info.setText(self._last_message)
-        self.export_info.setToolTip(self._last_message)
-        self.export_details_button.setEnabled(True)
+        self._last_message_error = error
+        self._update_status_counts()
+
+    def _update_status_counts(self) -> None:
+        error_count = int(bool(self._export_issue))
+        if self._last_message_error and self._last_message != f"Error: {self._export_issue}":
+            error_count += 1
+        counts = f"Warnings: {len(self._export_warnings)}   Errors: {error_count}"
+        self.export_info.setText(counts)
+        self.export_info.setToolTip(counts)
+        self.export_details_button.setEnabled(
+            bool(self._export_issue or self._export_warnings or self._last_message))
 
     def _show_export_details(self) -> None:
         lines = []
         if self._last_message:
             lines.append(self._last_message)
-        if self._export_issue and self._export_issue not in lines:
+        if self._export_issue and self._last_message != f"Error: {self._export_issue}":
             lines.append(f"Cannot export: {self._export_issue}")
         lines.extend(f"Warning: {warning}" for warning in self._export_warnings)
         if not lines:
             return
         dialog = QDialog(self)
-        dialog.setWindowTitle("Export details")
+        dialog.setWindowTitle("Status details")
         dialog.resize(620, 280)
         layout = QVBoxLayout(dialog)
         details = QPlainTextEdit()
@@ -265,6 +275,7 @@ class MainWindow(QMainWindow):
         self._export_issue = issue
         self._export_warnings = warnings or []
         self._last_message = ""
+        self._last_message_error = False
         colors = {
             "idle": ("#747a82", "#ffffff"),
             "blocked": ("#b84747", "#ffffff"),
@@ -279,18 +290,7 @@ class MainWindow(QMainWindow):
                 "border: 1px solid #30343a; border-radius: 6px; "
                 "font-size: 15px; font-weight: bold; }")
         self.export_button.setEnabled(state != "idle")
-        if state == "idle":
-            description = "Assign a cut to export."
-        elif state == "blocked":
-            description = f"Cannot export: {issue}"
-        elif state == "warnings":
-            count = len(self._export_warnings)
-            description = f"{count} warning{'s' if count != 1 else ''}. Export is available."
-        else:
-            description = "Ready to export."
-        self.export_info.setText(description)
-        self.export_info.setToolTip(description)
-        self.export_details_button.setEnabled(bool(issue or self._export_warnings))
+        self._update_status_counts()
 
     @staticmethod
     def _mark_invalid(widget: QWidget, invalid: bool) -> None:
@@ -993,7 +993,10 @@ class MainWindow(QMainWindow):
             self._set_export_state("warnings" if warnings else "ready", warnings=warnings)
         except CAMError as exc:
             issue = errors[0] if errors else str(exc)
-            self._set_export_state("blocked" if self.job.operations else "idle", issue=issue)
+            if self.job.operations:
+                self._set_export_state("blocked", issue=issue)
+            else:
+                self._set_export_state("idle")
         self.export_action.setEnabled(bool(self.job.operations))
         self._refreshing = False
 

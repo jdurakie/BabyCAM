@@ -130,7 +130,7 @@ class UIWorkflowTests(unittest.TestCase):
     def test_selection_and_errors_are_visible(self):
         window = MainWindow()
         window._assign("inside")
-        self.assertTrue(window.export_info.text().startswith("Error:"))
+        self.assertEqual(window.export_info.text(), "Warnings: 0   Errors: 1")
         self.assertTrue(window.export_details_button.isEnabled())
         self.assertEqual(window.export_button.property("exportState"), "idle")
         window.open_dxf(str(FIXTURE))
@@ -295,8 +295,10 @@ class UIWorkflowTests(unittest.TestCase):
     def test_explicit_depth_unlocks_export(self):
         window = MainWindow()
         self.assertEqual(window.export_button.text(), "Export GCode")
+        self.assertEqual(window.export_details_button.text(), "Status details")
         self.assertEqual(window.export_button.property("exportState"), "idle")
         self.assertFalse(window.export_button.isEnabled())
+        self.assertEqual(window.export_info.text(), "Warnings: 0   Errors: 0")
         window.open_dxf(str(FIXTURE))
         self.assertEqual(window.contours.count(), 3)
         for field, value in (
@@ -312,7 +314,7 @@ class UIWorkflowTests(unittest.TestCase):
         self.assertEqual(window.operations.count(), 1)
         self.assertEqual(window.export_button.property("exportState"), "blocked")
         self.assertTrue(window.export_button.isEnabled())
-        self.assertIn("Cannot export:", window.export_info.text())
+        self.assertEqual(window.export_info.text(), "Warnings: 0   Errors: 1")
         with patch.object(QMessageBox, "warning") as show_error:
             window.export_button.click()
             show_error.assert_called_once()
@@ -330,7 +332,7 @@ class UIWorkflowTests(unittest.TestCase):
         sweep = next(item for item in window.scene.items() if item.data(2) == "cutter-sweep")
         self.assertAlmostEqual(marker.rect().width(), 2)
         self.assertAlmostEqual(sweep.pen().widthF(), 2)
-        self.assertEqual(window.export_info.text(), "2 warnings. Export is available.")
+        self.assertEqual(window.export_info.text(), "Warnings: 2   Errors: 0")
         self.assertTrue(window.export_details_button.isEnabled())
         observed = []
 
@@ -352,11 +354,15 @@ class UIWorkflowTests(unittest.TestCase):
             with patch.object(QFileDialog, "getSaveFileName", return_value=(str(destination), "")):
                 window.export_button.click()
             self.assertIn("(BabyCAM profile job)", destination.read_text(encoding="utf-8"))
+            self.assertEqual(window.export_info.text(), "Warnings: 2   Errors: 0")
+            QTimer.singleShot(0, inspect_details)
+            window.export_details_button.click()
+            self.assertIn(f"Exported {destination}", observed[-1])
         window.cutting_length.setText("10")
         window.offset_x.setText("1")
         window.offset_y.setText("1")
         self.assertEqual(window.export_button.property("exportState"), "ready")
-        self.assertEqual(window.export_info.text(), "Ready to export.")
+        self.assertEqual(window.export_info.text(), "Warnings: 0   Errors: 0")
         window.close()
         window.deleteLater()
         APPLICATION.processEvents()
