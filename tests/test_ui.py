@@ -11,14 +11,14 @@ from ezdxf import units
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer  # noqa: E402
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPalette, QPen  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QDialog, QFileDialog, QGraphicsScene, QMessageBox, QPlainTextEdit, QPushButton,
 )
 
-from babycam.app import ContourItem, MainWindow, _tab_crossbar  # noqa: E402
+from babycam.app import Canvas, ContourItem, CutHitItem, MainWindow, _tab_crossbar  # noqa: E402
 from babycam.cam import planned_path  # noqa: E402
 from babycam.path_edits import lengths, place_tabs, point_at  # noqa: E402
 
@@ -28,6 +28,221 @@ APPLICATION = QApplication.instance() or QApplication([])
 
 
 class UIWorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._recent_config = tempfile.TemporaryDirectory()
+        cls._recent_path_patch = patch(
+            "babycam.recent_files.recent_files_path",
+            return_value=Path(cls._recent_config.name) / "recent_files.json")
+        cls._recent_path_patch.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._recent_path_patch.stop()
+        cls._recent_config.cleanup()
+
+    def test_open_recent_menu_reopens_file_across_windows(self):
+        from babycam import recent_files
+
+        recent_files.save_recent_files([])
+        window = MainWindow()
+        self.assertFalse(window.recent_button.isEnabled())
+        window.open_dxf(str(FIXTURE))
+        self.assertTrue(window.recent_button.isEnabled())
+        self.assertEqual(recent_files.load_recent_files(), [str(FIXTURE.resolve())])
+        window.close()
+        window.deleteLater()
+
+        reopened = MainWindow()
+        reopened._rebuild_recent_menu()
+        entry = reopened.recent_menu.actions()[0]
+        self.assertEqual(entry.toolTip(), str(FIXTURE.resolve()))
+        entry.trigger()
+        self.assertEqual(reopened.job.drawing.path, FIXTURE.resolve())
+        self.assertEqual(reopened.windowTitle(), f"BabyCAM — {FIXTURE.name}")
+        self.assertEqual(recent_files.load_recent_files(), [str(FIXTURE.resolve())])
+        reopened.close()
+        reopened.deleteLater()
+        APPLICATION.processEvents()
+
+    def test_failed_and_missing_dxf_are_not_added_to_recent_files(self):
+        from babycam import recent_files
+
+        recent_files.save_recent_files([])
+        window = MainWindow()
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.dxf"
+            with patch.object(QMessageBox, "warning") as warning:
+                window.open_dxf(str(missing))
+            warning.assert_called_once()
+            self.assertEqual(recent_files.load_recent_files(), [])
+            self.assertFalse(window.recent_button.isEnabled())
+
+            window.open_dxf(str(FIXTURE))
+            recent_files.save_recent_files([str(missing), str(FIXTURE)])
+            other = MainWindow()
+            other._rebuild_recent_menu()
+            self.assertFalse(other.recent_menu.actions()[0].isEnabled())
+            other.recent_menu.actions()[-1].trigger()
+            self.assertEqual(recent_files.load_recent_files(), [])
+            self.assertFalse(other.recent_button.isEnabled())
+            other.close()
+            other.deleteLater()
+        window.close()
+        window.deleteLater()
+        APPLICATION.processEvents()
+
+    def test_origin_cross_keeps_pixel_size_when_zooming(self):
+        window = MainWindow()
+        window.show()
+        APPLICATION.processEvents()
+        window.open_dxf(str(FIXTURE))
+        origin = next(item for item in window.scene.items() if item.data(2) == "origin")
+        self.assertTrue(origin.flags() & origin.GraphicsItemFlag.ItemIgnoresTransformations)
+
+        for scale in (1, 4, 1 / 12):
+            window.canvas.scale(scale, scale)
+            transform = origin.deviceTransform(window.canvas.viewportTransform())
+            bounds = transform.mapRect(origin.path().boundingRect())
+            self.assertAlmostEqual(bounds.width(), 12)
+            self.assertAlmostEqual(bounds.height(), 12)
+            self.assertLess((transform.map(QPointF(0, 0)) -
+                             window.canvas.mapFromScene(QPointF(0, 0))).manhattanLength(), 2)
+
+        window.close()
+        window.deleteLater()
+        APPLICATION.processEvents()
+
+    def test_origin_cross_does_not_affect_fit_for_small_drawing(self):
+        scene = QGraphicsScene()
+        square = QPainterPath()
+        square.addRect(0, 0, 1, 1)
+        scene.addPath(square)
+        cross = QPainterPath()
+        cross.moveTo(-6, 0)
+        cross.lineTo(6, 0)
+        marker = scene.addPath(cross)
+        marker.setFlag(marker.GraphicsItemFlag.ItemIgnoresTransformations)
+        canvas = Canvas(scene)
+        canvas.resize(300, 200)
+        canvas.show()
+        APPLICATION.processEvents()
+
+        canvas.fit_drawing()
+        scale_with_marker = abs(canvas.transform().m11())
+        scene.removeItem(marker)
+        canvas.fit_drawing()
+        scale_without_marker = abs(canvas.transform().m11())
+        self.assertAlmostEqual(scale_with_marker, scale_without_marker)
+
+        canvas.close()
+        canvas.deleteLater()
+        APPLICATION.processEvents()
+
+    def test_middle_drag_pans_without_changing_selection(self):
+        scene = QGraphicsScene()
+        scene.setSceneRect(-500, -500, 1000, 1000)
+        path = QPainterPath()
+        path.addRect(-10, -10, 20, 20)
+        contour = ContourItem(path)
+        contour.setFlag(contour.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(contour)
+        contour.setSelected(True)
+        canvas = Canvas(scene)
+        canvas.resize(300, 200)
+        canvas.show()
+        APPLICATION.processEvents()
+        canvas.centerOn(0, 0)
+        start = canvas.mapFromScene(QPointF(0, 0))
+        end = start + QPoint(35, 25)
+
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.MiddleButton, pos=start)
+        QTest.mouseMove(canvas.viewport(), end)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.MiddleButton, pos=end)
+
+        self.assertEqual(canvas.mapFromScene(QPointF(0, 0)), end)
+        self.assertTrue(contour.isSelected())
+        self.assertEqual(canvas.dragMode(), canvas.DragMode.RubberBandDrag)
+        contour.setSelected(False)
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=end - QPoint(30, 30))
+        QTest.mouseMove(canvas.viewport(), end + QPoint(30, 30))
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton,
+                           pos=end + QPoint(30, 30))
+        self.assertTrue(contour.isSelected())
+        canvas.close()
+        canvas.deleteLater()
+        APPLICATION.processEvents()
+
+    def test_middle_drag_pans_fitted_drawing(self):
+        scene = QGraphicsScene()
+        path = QPainterPath()
+        path.addRect(0, 0, 100, 100)
+        scene.addItem(ContourItem(path))
+        canvas = Canvas(scene)
+        canvas.resize(300, 200)
+        canvas.show()
+        APPLICATION.processEvents()
+        self.assertTrue(canvas.horizontalScrollBar().isVisible())
+        self.assertTrue(canvas.verticalScrollBar().isVisible())
+        canvas.fit_drawing()
+        self.assertGreater(canvas.horizontalScrollBar().maximum(),
+                           canvas.horizontalScrollBar().minimum())
+        self.assertGreater(canvas.verticalScrollBar().maximum(),
+                           canvas.verticalScrollBar().minimum())
+        start = canvas.mapFromScene(QPointF(50, 50))
+        end = start + QPoint(35, 25)
+
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.MiddleButton, pos=start)
+        QTest.mouseMove(canvas.viewport(), end)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.MiddleButton, pos=end)
+
+        self.assertEqual(canvas.mapFromScene(QPointF(50, 50)), end)
+        canvas.close()
+        canvas.deleteLater()
+        APPLICATION.processEvents()
+
+    def test_large_contour_and_cut_hit_areas_follow_canvas_zoom(self):
+        scene = QGraphicsScene()
+        path = QPainterPath()
+        path.moveTo(0, 0)
+        path.lineTo(4000, 0)
+        contour = ContourItem(path)
+        contour.setFlag(contour.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(contour)
+        clicked = []
+        cut = CutHitItem(path, clicked.append)
+        scene.addItem(cut)
+        canvas = Canvas(scene)
+        canvas.resize(400, 250)
+        canvas.show()
+        APPLICATION.processEvents()
+        canvas.fit_drawing()
+
+        for click_count, scale in enumerate((1, 3, 1 / 9), 1):
+            canvas.scale(scale, scale)
+            canvas.update_hit_widths()
+            center = canvas.mapFromScene(QPointF(2000, 0))
+            near = canvas.mapToScene(center + QPoint(0, 4))
+            far = canvas.mapToScene(center + QPoint(0, 9))
+            self.assertIn(contour, scene.items(near))
+            self.assertIn(cut, scene.items(near))
+            self.assertNotIn(contour, scene.items(far))
+            self.assertNotIn(cut, scene.items(far))
+            QTest.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton,
+                             pos=center + QPoint(0, 4))
+            APPLICATION.processEvents()
+            self.assertEqual(len(clicked), click_count)
+
+        scene.removeItem(cut)
+        QTest.mouseClick(canvas.viewport(), Qt.MouseButton.LeftButton,
+                         pos=center + QPoint(0, 4))
+        self.assertTrue(contour.isSelected())
+
+        canvas.close()
+        canvas.deleteLater()
+        APPLICATION.processEvents()
+
     def test_tab_crossbar_spans_cutter_width_perpendicular_to_path(self):
         points = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0))
         self.assertEqual(_tab_crossbar(points, 5, 2), ((5, -1), (5, 1)))

@@ -4,18 +4,31 @@ A small cross-platform desktop CAM tool for DXF-based 2.5D profile cuts.
 The current build is the first working vertical slice; [PLAN.md](PLAN.md)
 describes the full first release.
 
-## Run
+## Setup and run
 
 With [uv](https://docs.astral.sh/uv/) installed:
 
 ```sh
-uv sync
-uv run babycam
+./setup.sh
+./run.sh
 ```
+
+On Windows, use PowerShell:
+
+```powershell
+.\setup.ps1
+.\run.ps1
+```
+
+The setup scripts install the locked dependencies into `.venv`. On macOS and
+Linux, `run.sh` requires `uv` on your PATH and starts BabyCAM with
+`uv run --locked babycam`. It runs from the project directory automatically,
+so you can invoke it from elsewhere; any arguments are passed to BabyCAM.
+The run scripts will also sync the environment if needed.
 
 On Ubuntu with an X11 desktop, Qt also needs the system package
 `libxcb-cursor0`. If the app reports that `libxcb-cursor.so.0` is missing,
-install it with `sudo apt install libxcb-cursor0`, then run `uv run babycam`
+install it with `sudo apt install libxcb-cursor0`, then run `./run.sh`
 again.
 
 Or install the project into a Python 3.11+ virtual environment and run
@@ -24,7 +37,9 @@ Or install the project into a Python 3.11+ virtual environment and run
 ## First workflow
 
 1. Open a DXF. The included `tests/fixtures/keyboard_plate.dxf` is a small
-   example. Unitless drawings ask for millimeters or inches.
+   example. Unitless drawings ask for millimeters or inches. **Open Recent**
+   beside **Open DXF** lists the last 30 successfully opened drawings across
+   app launches; its menu can also clear the list.
 2. Enter measured stock thickness and a safe Z height in **Setup**.
 3. Enter the endmill's name, diameter, feed, plunge feed, RPM, and stepdown in
    **Endmill**, then confirm it can plunge. These cutting values have no

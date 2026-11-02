@@ -12,7 +12,7 @@ from typing import Callable
 
 import ezdxf
 from ezdxf import units
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer
 from PySide6.QtGui import (QAction, QColor, QKeySequence, QPainter, QPainterPath,
                           QPainterPathStroker, QPalette, QPen, QShortcut, QTransform)
 from PySide6.QtWidgets import (
@@ -20,9 +20,10 @@ from PySide6.QtWidgets import (
     QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QSpinBox, QTabWidget,
-    QToolTip, QVBoxLayout, QWidget,
+    QToolButton, QToolTip, QVBoxLayout, QWidget,
 )
 
+from . import recent_files
 from .cam import (CAMError, auto_tab_anchors, dogbone_centers, grbl_gcode, number,
                   plan_program, planned_path, preview_paths, tab_anchors_from_positions,
                   toggled_manual_tab_anchors)
@@ -83,19 +84,45 @@ def _cut_preview_color(operation: Operation) -> str:
     return "#e47d8f"
 
 
-def _centerline_hit_shape(path: QPainterPath) -> QPainterPath:
+HIT_MARGIN_PX = 6
+
+
+def _centerline_hit_shape(path: QPainterPath, width: float) -> QPainterPath:
     stroker = QPainterPathStroker()
-    stroker.setWidth(0.5)  # Drawing coordinates are millimeters.
+    stroker.setWidth(width)
     stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
     stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     return stroker.createStroke(path)
 
 
-class ContourItem(QGraphicsPathItem):
-    """Select only near the contour line, not its enclosed area."""
+class CenterlineHitItem(QGraphicsPathItem):
+    """A path with a hit area sized by the canvas's current pixel scale."""
+
+    def __init__(self, path: QPainterPath):
+        super().__init__(path)
+        self._hit_width = 0.5
+        self._hit_shape: QPainterPath | None = None
+
+    def set_hit_width(self, width: float) -> None:
+        if math.isclose(width, self._hit_width):
+            return
+        self.prepareGeometryChange()
+        self._hit_width = width
+        self._hit_shape = None
 
     def shape(self) -> QPainterPath:
-        return _centerline_hit_shape(self.path())
+        if self._hit_shape is None:
+            self._hit_shape = _centerline_hit_shape(self.path(), self._hit_width)
+        return self._hit_shape
+
+    def boundingRect(self) -> QRectF:
+        margin = self._hit_width / 2
+        return super().boundingRect().united(
+            self.path().controlPointRect().adjusted(-margin, -margin, margin, margin))
+
+
+class ContourItem(CenterlineHitItem):
+    """Select only near the contour line, not its enclosed area."""
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         # Qt's default selected-item box uses the cosmetic pen width as scene
@@ -105,16 +132,13 @@ class ContourItem(QGraphicsPathItem):
         painter.drawPath(self.path())
 
 
-class CutHitItem(QGraphicsPathItem):
+class CutHitItem(CenterlineHitItem):
     """Catch centerline clicks without drawing over cutter or path previews."""
 
     def __init__(self, path: QPainterPath, on_click: Callable[[Point], None]):
         super().__init__(path)
         self._on_click = on_click
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
-
-    def shape(self) -> QPainterPath:
-        return _centerline_hit_shape(self.path())
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         pass
@@ -168,6 +192,24 @@ class Canvas(QGraphicsView):
         self.setBackgroundBrush(QColor("#181d24"))
         self.setTransform(QTransform.fromScale(1, -1))  # CNC coordinates: +Y is up.
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.setStyleSheet("""
+            QScrollBar { background: #252d37; border: none; }
+            QScrollBar:horizontal { height: 12px; }
+            QScrollBar:vertical { width: 12px; }
+            QScrollBar::handle { background: #68798b; border-radius: 5px; margin: 2px; }
+            QScrollBar::handle:hover { background: #91a4b8; }
+            QScrollBar::handle:pressed { background: #b0c2d4; }
+            QScrollBar::handle:horizontal { min-width: 24px; }
+            QScrollBar::handle:vertical { min-height: 24px; }
+            QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+            QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+        """)
+        corner = QWidget(self)
+        corner.setStyleSheet("background: #252d37;")
+        self.setCornerWidget(corner)
+        self._pan_last_pos: QPoint | None = None
         self.on_right_click: Callable[[], None] | None = None
         self.mode_hint = QLabel(self.viewport())
         self.mode_hint.setStyleSheet(
@@ -188,6 +230,11 @@ class Canvas(QGraphicsView):
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     def mousePressEvent(self, event):  # type: ignore[override]
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._pan_last_pos = event.position().toPoint()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.RightButton and self.on_right_click:
             self.on_right_click()
             event.accept()
@@ -198,15 +245,64 @@ class Canvas(QGraphicsView):
             return
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event):  # type: ignore[override]
+        if self._pan_last_pos is not None:
+            self._ensure_pan_room()
+            position = event.position().toPoint()
+            delta = position - self._pan_last_pos
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            self._pan_last_pos = position
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # type: ignore[override]
+        if event.button() == Qt.MouseButton.MiddleButton and self._pan_last_pos is not None:
+            self._pan_last_pos = None
+            self.viewport().unsetCursor()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _ensure_pan_room(self) -> None:
+        visible = self.mapToScene(self.viewport().rect()).boundingRect()
+        padded = visible.adjusted(-visible.width(), -visible.height(),
+                                  visible.width(), visible.height())
+        self.setSceneRect(self.sceneRect().united(padded))
+
     def wheelEvent(self, event):  # type: ignore[override]
         self.scale(1.15 if event.angleDelta().y() > 0 else 1 / 1.15,
                    1.15 if event.angleDelta().y() > 0 else 1 / 1.15)
+        self.update_hit_widths()
         event.accept()
 
+    def update_hit_widths(self) -> None:
+        transform = self.viewportTransform()
+        scale_x = math.hypot(transform.m11(), transform.m12())
+        scale_y = math.hypot(transform.m21(), transform.m22())
+        scale = min(scale_x, scale_y)
+        if scale <= 0:
+            return
+        width = 2 * HIT_MARGIN_PX / scale
+        for item in self.scene().items():
+            if isinstance(item, CenterlineHitItem):
+                item.set_hit_width(width)
+
     def fit_drawing(self) -> None:
-        bounds = self.scene().itemsBoundingRect().adjusted(-2, -2, 2, 2)
+        drawing_items = [item for item in self.scene().items()
+                         if not item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations]
+        if not drawing_items:
+            return
+        bounds = drawing_items[0].sceneBoundingRect()
+        for item in drawing_items[1:]:
+            bounds = bounds.united(item.sceneBoundingRect())
+        bounds = bounds.adjusted(-2, -2, 2, 2)
         if bounds.width() > 0 and bounds.height() > 0:
+            self.setSceneRect(bounds)
             self.fitInView(bounds, Qt.AspectRatioMode.KeepAspectRatio)
+            self.update_hit_widths()
+            self._ensure_pan_room()
 
 
 class MainWindow(QMainWindow):
@@ -219,6 +315,12 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError, TypeError) as exc:
             self.tool_presets = []
             self.library_error = f"Could not read tool library: {exc}"
+        try:
+            self.recent_paths = recent_files.load_recent_files()
+            self.recent_files_error = None
+        except (OSError, ValueError, TypeError) as exc:
+            self.recent_paths = []
+            self.recent_files_error = f"Could not read recent files: {exc}"
         self._input_error: str | None = None
         self._refreshing = False
         self._tab_placement_id: str | None = None
@@ -290,9 +392,19 @@ class MainWindow(QMainWindow):
         menu.addAction(open_action)
         toolbar = self.addToolBar("Main")
         toolbar.addAction(open_action)
+        self.recent_menu = QMenu(self)
+        self.recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
+        self.recent_button = QToolButton(self)
+        self.recent_button.setText("Open Recent")
+        self.recent_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.recent_button.setMenu(self.recent_menu)
+        self.recent_button.setEnabled(bool(self.recent_paths))
+        toolbar.addWidget(self.recent_button)
         self._refresh()
         if self.library_error:
             self._set_message(self.library_error, error=True)
+        if self.recent_files_error:
+            self._set_message(self.recent_files_error, error=True)
 
     def _set_message(self, text: str, *, error: bool = False) -> None:
         self._last_message = f"Error: {text}" if error else text
@@ -703,6 +815,29 @@ class MainWindow(QMainWindow):
         if path:
             self.open_dxf(path)
 
+    def _rebuild_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        for path in self.recent_paths:
+            entry = Path(path)
+            action = self.recent_menu.addAction(f"{entry.name} — {entry.parent}")
+            action.setToolTip(path)
+            if entry.is_file():
+                action.triggered.connect(lambda checked=False, selected=path: self.open_dxf(selected))
+            else:
+                action.setText(f"{action.text()} (missing)")
+                action.setEnabled(False)
+        self.recent_menu.addSeparator()
+        self.recent_menu.addAction("Clear Recent Files", self._clear_recent_files)
+
+    def _clear_recent_files(self) -> None:
+        try:
+            recent_files.save_recent_files([])
+        except OSError as exc:
+            self._set_message(f"Could not clear recent files: {exc}", error=True)
+            return
+        self.recent_paths = []
+        self.recent_button.setEnabled(False)
+
     def open_dxf(self, path: str) -> None:
         try:
             try:
@@ -728,6 +863,12 @@ class MainWindow(QMainWindow):
             self._operation_selected()
             self._refresh(fit=True)
             self.setWindowTitle(f"BabyCAM — {Path(path).name}")
+            self.recent_paths = recent_files.add_recent_file(self.recent_paths, path)
+            self.recent_button.setEnabled(True)
+            try:
+                recent_files.save_recent_files(self.recent_paths)
+            except OSError as exc:
+                self._set_message(f"Could not save recent files: {exc}", error=True)
         except (OSError, ValueError, ezdxf.DXFError) as exc:
             QMessageBox.warning(self, "Could not open DXF", str(exc))
 
@@ -1103,11 +1244,13 @@ class MainWindow(QMainWindow):
                 return [(x + shift_x, y + shift_y) for x, y in points]
 
             origin = QPainterPath()
-            origin.moveTo(-1, 0); origin.lineTo(1, 0)
-            origin.moveTo(0, -1); origin.lineTo(0, 1)
+            origin.moveTo(-6, 0); origin.lineTo(6, 0)
+            origin.moveTo(0, -6); origin.lineTo(0, 6)
             origin_pen = QPen(QColor("#e6ba64"), 1)
             origin_pen.setCosmetic(True)
-            self.scene.addPath(origin, origin_pen)
+            origin_item = self.scene.addPath(origin, origin_pen)
+            origin_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            origin_item.setData(2, "origin")
             for reference in drawing.references:
                 pen = QPen(QColor("#65717f"), 1, Qt.PenStyle.DashLine)
                 pen.setCosmetic(True)
@@ -1193,6 +1336,8 @@ class MainWindow(QMainWindow):
                     relief.setZValue(8)
             if fit:
                 self.canvas.fit_drawing()
+            else:
+                self.canvas.update_hit_widths()
         else:
             errors = []
         try:
