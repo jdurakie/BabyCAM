@@ -1,8 +1,7 @@
 # BabyCAM
 
-A small cross-platform desktop CAM tool for DXF-based 2.5D profile cuts.
-The current build is the first working vertical slice; [PLAN.md](PLAN.md)
-describes the full first release.
+A very small cross-platform desktop CAM tool for DXF-based 2.5D profile cuts.
+Entirely vibe-coded.
 
 ## Setup and run
 
