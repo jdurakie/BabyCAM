@@ -202,6 +202,35 @@ class UIWorkflowTests(unittest.TestCase):
         canvas.deleteLater()
         APPLICATION.processEvents()
 
+    def test_shift_left_drag_pans_without_selecting(self):
+        scene = QGraphicsScene()
+        scene.setSceneRect(-500, -500, 1000, 1000)
+        path = QPainterPath()
+        path.addRect(-10, -10, 20, 20)
+        contour = ContourItem(path)
+        contour.setFlag(contour.GraphicsItemFlag.ItemIsSelectable)
+        scene.addItem(contour)
+        canvas = Canvas(scene)
+        canvas.resize(300, 200)
+        canvas.show()
+        APPLICATION.processEvents()
+        canvas.centerOn(0, 0)
+        start = canvas.mapFromScene(QPointF(0, 0))
+        end = start + QPoint(35, 25)
+
+        QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier, pos=start)
+        QTest.mouseMove(canvas.viewport(), end)
+        QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.ShiftModifier, pos=end)
+
+        self.assertEqual(canvas.mapFromScene(QPointF(0, 0)), end)
+        self.assertFalse(contour.isSelected())
+        self.assertIsNone(canvas._pan_last_pos)
+        canvas.close()
+        canvas.deleteLater()
+        APPLICATION.processEvents()
+
     def test_large_contour_and_cut_hit_areas_follow_canvas_zoom(self):
         scene = QGraphicsScene()
         path = QPainterPath()

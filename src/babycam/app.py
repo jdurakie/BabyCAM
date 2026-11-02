@@ -210,6 +210,7 @@ class Canvas(QGraphicsView):
         corner.setStyleSheet("background: #252d37;")
         self.setCornerWidget(corner)
         self._pan_last_pos: QPoint | None = None
+        self._pan_button: Qt.MouseButton | None = None
         self.on_right_click: Callable[[], None] | None = None
         self.mode_hint = QLabel(self.viewport())
         self.mode_hint.setStyleSheet(
@@ -230,7 +231,10 @@ class Canvas(QGraphicsView):
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     def mousePressEvent(self, event):  # type: ignore[override]
-        if event.button() == Qt.MouseButton.MiddleButton:
+        if (event.button() == Qt.MouseButton.MiddleButton or
+                (event.button() == Qt.MouseButton.LeftButton and
+                 event.modifiers() & Qt.KeyboardModifier.ShiftModifier)):
+            self._pan_button = event.button()
             self._pan_last_pos = event.position().toPoint()
             self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
@@ -258,8 +262,9 @@ class Canvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # type: ignore[override]
-        if event.button() == Qt.MouseButton.MiddleButton and self._pan_last_pos is not None:
+        if event.button() == self._pan_button and self._pan_last_pos is not None:
             self._pan_last_pos = None
+            self._pan_button = None
             self.viewport().unsetCursor()
             event.accept()
             return
